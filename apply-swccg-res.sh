@@ -52,6 +52,27 @@ print("patched", site)
 PY
 fi
 
+python3 - "$NGINX_SITE" <<'PY'
+from pathlib import Path
+site = Path(__import__("sys").argv[1])
+text = site.read_text(encoding="utf-8")
+needle = "    index index.html;"
+inject = """    index index.html;
+    http2 on;
+    open_file_cache max=20000 inactive=60s;
+    open_file_cache_valid 30s;
+    open_file_cache_min_uses 2;
+    open_file_cache_errors off;"""
+if "http2 on;" not in text and needle in text:
+    text = text.replace(needle, inject, 1)
+    site.write_text(text, encoding="utf-8")
+    print("enabled http2 + open_file_cache")
+elif "http2 on;" in text:
+    print("http2 already on")
+else:
+    raise SystemExit(f"cannot find {needle!r} in {site}")
+PY
+
 nginx -t
 systemctl reload nginx
 echo "DONE apply-swccg-res"
