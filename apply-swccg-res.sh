@@ -19,7 +19,7 @@ fi
 test -d "$HOLO/Images-HT/starwars"
 
 echo "== GEMP chrome $RES"
-mkdir -p "$RES/gemp" "$RES/packs" "$RES/rules" "$RES/social" "$RES/parsecs" "$RES/wp" "$RES/cards"
+mkdir -p "$RES/gemp" "$RES/packs" "$RES/rules" "$RES/social" "$RES/parsecs" "$RES/wp" "$RES/cards" "$RES/snapshots"
 while IFS= read -r url || [ -n "$url" ]; do
   url="${url%%$'\r'}"
   [ -z "$url" ] && continue

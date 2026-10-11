@@ -1,6 +1,6 @@
 # Include inside the swccg.com HTTPS server block, before location /.
 # Card faces: holotable Images-HT/starwars  →  /cards/
-# GEMP chrome copied once from the PC CDN   →  /gemp/ /packs/ /rules/ /social/
+# GEMP chrome copied once from the PC CDN   →  /gemp/ /packs/ /rules/ /social/; HTML snapshots → /snapshots/
 
 location /cards/ {
     alias /opt/swccg-holotable/Images-HT/starwars/;
@@ -24,6 +24,12 @@ location /rules/ {
     alias /opt/swccg-res/rules/;
     add_header Cache-Control "public, max-age=31536000, immutable";
     access_log off;
+}
+
+# Preserved HTML snapshots of cited sources (captured by the Wayback Machine from here)
+location /snapshots/ {
+    alias /opt/swccg-res/snapshots/;
+    default_type text/html;
 }
 
 location /social/ {
