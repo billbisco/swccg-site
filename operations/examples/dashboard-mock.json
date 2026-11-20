@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "generated_at": 1700000600,
+  "sources": [
+    {
+      "source": "archive", "observed_at": 1700000000, "last_success_at": 1700000000,
+      "status": "ok", "detail": null, "stale": false,
+      "metrics": [
+        {"metric_id": "archive.verified", "dimension": "all", "kind": "gauge", "unit": "count", "value": 123, "observed_at": 1700000000},
+        {"metric_id": "archive.failed", "dimension": "all", "kind": "gauge", "unit": "count", "value": 8, "observed_at": 1700000000},
+        {"metric_id": "archive.pending", "dimension": "all", "kind": "gauge", "unit": "count", "value": 21, "observed_at": 1700000000},
+        {"metric_id": "archive.unverified", "dimension": "all", "kind": "gauge", "unit": "count", "value": null, "observed_at": 1700000000},
+        {"metric_id": "archive.mode_healthy", "dimension": "all", "kind": "gauge", "unit": "boolean", "value": 1, "observed_at": 1700000000},
+        {"metric_id": "archive.run_success", "dimension": "all", "kind": "gauge", "unit": "boolean", "value": 0, "observed_at": 1700000000},
+        {"metric_id": "archive.last_verified_at", "dimension": "all", "kind": "gauge", "unit": "epoch_seconds", "value": 1699999300, "observed_at": 1700000000}
+      ]
+    },
+    {
+      "source": "host", "observed_at": 1700000000, "last_success_at": 1700000000,
+      "status": "ok", "detail": null, "stale": false,
+      "metrics": [
+        {"metric_id": "host.memory_available", "dimension": "all", "kind": "gauge", "unit": "bytes", "value": 2684354560, "observed_at": 1700000000},
+        {"metric_id": "host.memory_total", "dimension": "all", "kind": "gauge", "unit": "bytes", "value": 8589934592, "observed_at": 1700000000},
+        {"metric_id": "host.disk_total", "dimension": "data", "kind": "gauge", "unit": "bytes", "value": 107374182400, "observed_at": 1700000000},
+        {"metric_id": "host.disk_available", "dimension": "data", "kind": "gauge", "unit": "bytes", "value": 17179869184, "observed_at": 1700000000}
+      ]
+    },
+    {
+      "source": "service", "observed_at": 1700000000, "last_success_at": 1700000000,
+      "status": "degraded", "detail": "partial_units", "stale": false,
+      "metrics": [
+        {"metric_id": "service.active", "dimension": "wayback", "kind": "gauge", "unit": "boolean", "value": 0, "observed_at": 1700000000},
+        {"metric_id": "service.timer_active", "dimension": "wayback", "kind": "gauge", "unit": "boolean", "value": 1, "observed_at": 1700000000},
+        {"metric_id": "service.run_success", "dimension": "wayback", "kind": "gauge", "unit": "boolean", "value": 0, "observed_at": 1700000000},
+        {"metric_id": "service.next_run_at", "dimension": "wayback", "kind": "gauge", "unit": "epoch_seconds", "value": 1700001200, "observed_at": 1700000000},
+        {"metric_id": "service.active", "dimension": "git_backup", "kind": "gauge", "unit": "boolean", "value": 0, "observed_at": 1700000000},
+        {"metric_id": "service.run_success", "dimension": "git_backup", "kind": "gauge", "unit": "boolean", "value": 1, "observed_at": 1700000000},
+        {"metric_id": "service.last_end_at", "dimension": "git_backup", "kind": "gauge", "unit": "epoch_seconds", "value": 1699990000, "observed_at": 1700000000}
+      ]
+    },
+    {
+      "source": "backup", "observed_at": 1700000000, "last_success_at": 1699990000,
+      "status": "degraded", "detail": "source_old", "stale": true,
+      "metrics": [
+        {"metric_id": "backup.last_verified_at", "dimension": "all", "kind": "gauge", "unit": "epoch_seconds", "value": 1699990000, "observed_at": 1699990000},
+        {"metric_id": "backup.completed_tasks", "dimension": "all", "kind": "gauge", "unit": "count", "value": 42, "observed_at": 1699990000}
+      ]
+    }
+  ]
+}
