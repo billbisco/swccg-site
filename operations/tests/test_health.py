@@ -66,7 +66,9 @@ class ArchiveCensusTests(unittest.TestCase):
             fixture["ledger_status_counts"]["failed"] = 2
             ledger["private_url_1"]["verify"].pop("at")
             p.write_text(json.dumps(ledger))
-            self.assertIsNone(value(parse_archive_health(fixture, NOW, 600, p), "archive.verified_7d"))
+            result = parse_archive_health(fixture, NOW, 600, p)
+            self.assertEqual(value(result, "archive.verified_7d"), 0)
+            self.assertEqual(value(result, "archive.verified_undated"), 1)
 
 
 class ArchiveHealthTest(unittest.TestCase):

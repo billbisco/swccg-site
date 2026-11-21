@@ -52,6 +52,7 @@ METRIC_LABELS = {
     "archive.run_success": "Latest run succeeded",
     "archive.verified_24h": "Verified in last 24 hours (current ledger)",
     "archive.verified_7d": "Verified in last 7 days (current ledger)",
+    "archive.verified_undated": "Verified records without usable timestamp",
     "archive.failed_transient": "Failed — eligible for weekly retry",
     "archive.failed_due": "Failed — past weekly retry threshold",
     "archive.failed_other": "Failed — needs investigation",
@@ -222,9 +223,13 @@ def _preservation(sources):
     state = f'<p><strong>Automatic cooldown.</strong> {_e(reason)}. Next eligible retry: {_e(_time(value("next_eligible_at")))}.</p>' if cooldown else ''
     def count(name):
         return _value(value(name), "count")
+    def window(name):
+        n = count(name)
+        return "At least " + n if value("verified_undated") and n != "Unavailable" else n
+    coverage = "Verification timestamps; undated records: " + count("verified_undated")
     return f'''<section class="history"><h2>Preservation progress</h2>{state}<p>Scheduler: {_e(scheduler)} · Last verified: {_e(_time(value("last_verified_at")))}</p>
     <p><strong>{percentage:.1f}%</strong> · {counts[0]:,} of {total:,} current ledger entries verified</p><progress value="{counts[0]}" max="{total}" style="width:100%;height:1.4rem" aria-label="Verified ledger entries"></progress>
-    <div class="tiles">{_card("Verified in 24 hours", count("verified_24h"), "Current ledger verification timestamps")}{_card("Verified in 7 days", count("verified_7d"), "Current ledger verification timestamps")}{_card("Failed — weekly retry", count("failed_transient"), "Subject to queue and cooldown; due: " + count("failed_due"))}{_card("Failed — investigation", count("failed_other"), "Not automatically reset by the transient rule")}{_card("MANPC lane", count("verified_manpc"), "Verified receipts recorded; candidates: " + count("manpc_candidates") + "; explicitly deferred: " + count("manpc_deferred"))}</div>
+    <div class="tiles">{_card("Verified in 24 hours", window("verified_24h"), coverage)}{_card("Verified in 7 days", window("verified_7d"), coverage)}{_card("Failed — weekly retry", count("failed_transient"), "Subject to queue and cooldown; due: " + count("failed_due"))}{_card("Failed — investigation", count("failed_other"), "Not automatically reset by the transient rule")}{_card("MANPC lane", count("verified_manpc"), "Verified receipts recorded; candidates: " + count("manpc_candidates") + "; explicitly deferred: " + count("manpc_deferred"))}</div>
     <p>Counts are current ledger entries, not unique file versions or an immutable activity history. MANPC verifies existing submissions; it does not submit saves.</p></section>'''
 
 
