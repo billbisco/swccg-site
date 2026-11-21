@@ -8,11 +8,12 @@ from .health import read_receipt
 
 SECURITY_KEYS=('community_active','community_dropped_packets','community_dropped_bytes','local_active','local_dropped_packets','local_dropped_bytes','processed_packets','interval_seconds','daily_community_dropped_packets','daily_local_dropped_packets','daily_processed_packets','daily_coverage_seconds')
 PLAYER_KEYS=('games','partial_ids','participants','local_accounts')
+PLAY_STATUS_KEYS=('active_1d','active_7d','active_all','played_1d','played_7d','played_all','tables','hall')
 AUDIENCE_KEYS=('page_requests','likely_browser_requests','known_automation_requests','unknown_requests','browser_address_groups','parsed_lines','invalid_lines','coverage_seconds')
 SITE_SCOPES=('production','site','wiki','play','forum')
 SITE_FIELDS=('browser','automation','unknown','browser_groups')
 SECURITY_SPECS=tuple((f'security.{k}','bytes' if k.endswith('_bytes') else 'seconds' if k.endswith('_seconds') else 'count','all') for k in SECURITY_KEYS)+(('security.source_checked_at','epoch_seconds','all'),)
-PLAYER_SPECS=tuple((f'player.{k}','count',f'rolling_{d}d') for d in (1,7,30) for k in PLAYER_KEYS)+(('player.source_checked_at','epoch_seconds','all'),)
+PLAYER_SPECS=tuple((f'player.{k}','count',f'rolling_{d}d') for d in (1,7,30) for k in PLAYER_KEYS)+(('player.source_checked_at','epoch_seconds','all'),)+tuple((f'player.reported_{k}','count','all') for k in PLAY_STATUS_KEYS)+(('player.status_checked_at','epoch_seconds','all'),)
 FORUM_SPECS=tuple((f'audience.forum_{k}','seconds' if k=='coverage_seconds' else 'count','all') for k in AUDIENCE_KEYS)
 SITE_SPECS=tuple((f'audience.{d}_{k}','count',scope) for d in ('today','yesterday') for scope in SITE_SCOPES for k in SITE_FIELDS)+tuple((f'audience.{d}_coverage','seconds','all') for d in ('today','yesterday'))+(('audience.site_checked_at','epoch_seconds','all'),)
 AUDIENCE_SPECS=FORUM_SPECS+SITE_SPECS
@@ -28,22 +29,26 @@ def count(v):return v if type(v) is int and 0<=v<=2**53-1 else None
 def project_network(path,source,now):
     try:
         d=read_receipt(path); row=d[source]
-        if d['schema']!=1 or not isinstance(row,dict):return unavailable(source,now)
-        observed=count(row['observed_at'])
-        if observed is None or observed>now:return unavailable(source,now,'invalid_receipt')
-        if source=='player':
-            for window in row['windows'].values():
-                if any(count(window.get(k)) is None for k in PLAYER_KEYS) or window['partial_ids']>window['games'] or window['participants']>2*window['games']:
-                    return unavailable(source,now,'invalid_receipt')
+        if d['schema']!=1:return unavailable(source,now)
+        row=row if isinstance(row,dict) else {}
+        observed=count(row.get('observed_at'))
+        if observed is None or observed>now:row={};observed=None
         specs=SECURITY_SPECS if source=='security' else PLAYER_SPECS
+        status=d.get('player_status');status=status if isinstance(status,dict) and count(status.get('observed_at')) is not None and 0<=now-status['observed_at']<=900 else {}
+        if source=='player' and row:
+            for window in row['windows'].values():
+                if any(count(window.get(k)) is None for k in PLAYER_KEYS) or window['partial_ids']>window['games'] or window['participants']>2*window['games']:row={};observed=None;break
+        if not row and (source!='player' or not status):return unavailable(source,now,'invalid_receipt')
         result=[]
         for mid,unit,dim in specs:
             key=mid.split('.',1)[1]
             if key=='source_checked_at':val=observed
             elif source=='security':val=count(row['metrics'].get(key))
-            else:val=count(row['windows'][dim.removeprefix('rolling_').removesuffix('d')].get(key))
+            elif key=='status_checked_at':val=status.get('observed_at')
+            elif key.startswith('reported_'):val=count(status.get('metrics',{}).get(key.removeprefix('reported_')))
+            else:val=count(row.get('windows',{}).get(dim.removeprefix('rolling_').removesuffix('d'),{}).get(key))
             result.append(Metric(mid,val,unit,dim))
-        partial=any(x.value is None for x in result) or (source=='security' and row['metrics'].get('daily_coverage_seconds',0)<86400); old=now-observed>(1800 if source=='security' else 3600)
+        partial=any(x.value is None for x in result) or (source=='security' and row['metrics'].get('daily_coverage_seconds',0)<86400); old=observed is not None and now-observed>(1800 if source=='security' else 3600)
         return AdapterResult(source,now,tuple(result),status='degraded' if partial or old else 'ok',detail='source_old' if old else 'partial_receipt' if partial else None)
     except (OSError,ValueError,TypeError,KeyError):return unavailable(source,now,'invalid_receipt')
 

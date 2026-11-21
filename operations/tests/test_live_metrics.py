@@ -4,12 +4,15 @@ import tempfile
 import unittest
 from datetime import datetime,timezone
 from operations.live_metrics import forum_projection, project_network
-from operations.deploy.network_metrics import bouncer_interval
+from operations.deploy.network_metrics import bouncer_interval,parse_play_status
 
 NOW=int(datetime(2026,1,2,12,tzinfo=timezone.utc).timestamp())
 
 
 class LiveMetricsTests(unittest.TestCase):
+    def test_play_status_contract(self):
+        html='<b>Active players:</b>&nbsp;&nbsp;1 (in last 24 hours),&nbsp;&nbsp;2 (in last week),&nbsp;&nbsp;3 (all time)<br/><b>Games played:</b>&nbsp;&nbsp;4 (in last 24 hours),&nbsp;&nbsp;5 (in last week),&nbsp;&nbsp;6 (all time)<h2>Tables count: 7&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Players in hall count: 8</h2>'
+        self.assertEqual(8,parse_play_status(html)['hall']);self.assertEqual(5,parse_play_status(html)['played_7d'])
     def test_bouncer_counts_distinct_origins_without_identity(self):
         items=[{'name':'dropped','unit':'packet','labels':{'origin':'crowdsec','ip_type':ip},'value':n} for ip,n in [('ipv4',5),('ipv6',2)]]
         raw=json.dumps({'metrics':[{'meta':{'utc_now_timestamp':NOW,'window_size_seconds':900},'items':items}]})
@@ -28,5 +31,5 @@ class LiveMetricsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'net.json'; window={'games':3,'partial_ids':1,'participants':4,'local_accounts':2}
             d={'schema':1,'player':{'observed_at':NOW,'windows':{str(i):dict(window) for i in (1,7,30)},'secret':'ignored'}};p.write_text(json.dumps(d))
-            r=project_network(p,'player',NOW);self.assertEqual('ok',r.status);self.assertNotIn('ignored',str(r))
+            r=project_network(p,'player',NOW);self.assertEqual('degraded',r.status);self.assertNotIn('ignored',str(r))
             d['player']['windows']['1']['participants']=100;p.write_text(json.dumps(d));self.assertEqual('unavailable',project_network(p,'player',NOW).status)

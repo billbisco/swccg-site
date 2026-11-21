@@ -104,6 +104,15 @@ METRIC_LABELS = {
     "player.participants":"Distinct recorded participant IDs",
     "player.local_accounts":"Local Play account rows created",
     "player.source_checked_at":"Play aggregate checked at",
+    "player.status_checked_at":"Play live-status receipt checked at",
+    "player.reported_active_1d":"Play-reported active players (24h)",
+    "player.reported_active_7d":"Play-reported active players (7d)",
+    "player.reported_active_all":"Play-reported active players (all time)",
+    "player.reported_played_1d":"Play-reported games played (24h)",
+    "player.reported_played_7d":"Play-reported games played (7d)",
+    "player.reported_played_all":"Play-reported games played (all time)",
+    "player.reported_tables":"Current Play tables",
+    "player.reported_hall":"Current players in game hall",
     "security.community_active":"Community blocklist records (active)",
     "security.local_active":"Local security-engine decisions (active)",
     "security.community_dropped_packets":"Packets dropped — community blocklist",
@@ -360,7 +369,7 @@ def _source_section(source_id: str, source: Mapping[str, Any] | None) -> str:
     data = _service_table(rows) if source_id == "service" else ''
     if not data:
         data = ('<div class="table-scroll"><table><thead><tr><th scope="col">Metric</th><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Observed at</th></tr></thead><tbody>' + table + '</tbody></table></div>') if table else '<p class="empty">No supported aggregate values in this sample. Coverage is missing.</p>'
-    notes={"audience":"Production HTML navigation stream covers the measured main site, Wiki, Play and Forum routes only. Combined unique address-group estimates deduplicate across those routes for each UTC day, not across days. They are approximate address groups, not unique people, and uptime coverage does not prove complete delivery. Raw addresses enter only a local datagram and are discarded immediately; no new raw log, tracking cookie or fingerprint. Forum's separate log-based 24h figures are not added to the combined estimate.","player":"Play-only recorded game results and distinct IDs in recorded outcomes; missing IDs limit coverage. Local player rows are not deduplicated sign-in registrations. Live sessions and instrumented funnel events are not yet measured.","security":"Source-owned latest bouncer interval and non-overlapping reported daily intervals. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
+    notes={"audience":"Production HTML navigation stream covers the measured main site, Wiki, Play and Forum routes only. Combined unique address-group estimates deduplicate across those routes for each UTC day, not across days. They are approximate address groups, not unique people, and uptime coverage does not prove complete delivery. Raw addresses enter only a local datagram and are discarded immediately; no new raw log, tracking cookie or fingerprint. Forum's separate log-based 24h figures are not added to the combined estimate.","player":"Play-only live hall/tables and published aggregate player/game counts are the existing game's own definitions. The separate recorded outcome counts and distinct IDs have incomplete participant-ID coverage. Local player rows are not deduplicated sign-in registrations. The full instrumented funnel is not yet measured.","security":"Source-owned latest bouncer interval and non-overlapping reported daily intervals. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
     if source_id in notes:data=f'<p class="service-note">{_e(notes[source_id])}</p>'+audience_table+data
     return f'''<section id="{source_id}" class="panel"><header><div><h2>{_e(name)}</h2><p>{_e(description)}</p></div><span class="badge {style}">{_e(label)}</span></header>
       <dl class="freshness"><div><dt>Source observed</dt><dd>{_e(_time(source.get('observed_at')))}</dd></div><div><dt>Last successful source read</dt><dd>{_e(_time(source.get('last_success_at')))}</dd></div></dl>

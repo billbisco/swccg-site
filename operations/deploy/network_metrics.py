@@ -7,6 +7,7 @@ import time
 import os
 import tempfile
 import sqlite3
+import re
 
 
 def command(args, timeout, stdin=None):
@@ -61,11 +62,25 @@ def player(source):
     return command(['docker','exec','-i','gemp_swccg_app_1','sh','-c',shell],30,source.read_text(encoding='utf-8'))
 
 
+def parse_play_status(text):
+    if len(text)>8192:raise ValueError('status response budget')
+    active=re.search(r'Active players:</b>&nbsp;&nbsp;(\d+) \(in last 24 hours\),&nbsp;&nbsp;(\d+) \(in last week\),&nbsp;&nbsp;(\d+) \(all time\)',text)
+    games=re.search(r'Games played:</b>&nbsp;&nbsp;(\d+) \(in last 24 hours\),&nbsp;&nbsp;(\d+) \(in last week\),&nbsp;&nbsp;(\d+) \(all time\)',text)
+    live=re.search(r'Tables count: (\d+)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Players in hall count: (\d+)',text)
+    if not active or not games or not live:raise ValueError('unknown status contract')
+    return dict(zip(('active_1d','active_7d','active_all','played_1d','played_7d','played_all','tables','hall'),map(int,(*active.groups(),*games.groups(),*live.groups()))))
+
+
+def player_status():
+    r=subprocess.run(['docker','exec','gemp_swccg_app_1','curl','-fsS','--max-time','5','http://127.0.0.1/gemp-swccg-server/'],capture_output=True,text=True,timeout=10,check=True)
+    return {'observed_at':int(time.time()),'metrics':parse_play_status(r.stdout)}
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--java-source',type=Path,required=True);args=p.parse_args()
     try: old=json.loads(args.output.read_text(encoding='utf-8'))
     except (OSError,ValueError):old={}
-    now=int(time.time()); result={'schema':1,'security':None,'player':None}
+    now=int(time.time()); result={'schema':1,'security':None,'player':None,'player_status':None}
     try:result['security']=security()
     except (OSError,ValueError,KeyError,TypeError,sqlite3.Error,subprocess.SubprocessError):pass
     oldplayer=old.get('player')
@@ -73,6 +88,8 @@ def main():
     else:
         try:result['player']=player(args.java_source)
         except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):pass
+    try:result['player_status']=player_status()
+    except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):pass
     with tempfile.NamedTemporaryFile(mode='w',dir=args.output.parent,delete=False,encoding='utf-8') as f:
         json.dump(result,f); f.flush(); os.fsync(f.fileno()); tmp=f.name
     os.chmod(tmp,0o600); os.replace(tmp,args.output)
