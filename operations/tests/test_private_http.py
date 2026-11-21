@@ -65,6 +65,12 @@ class ReadApplicationTests(unittest.TestCase):
         self.assertEqual(400, self.app.handle("GET", "/", request_headers(**{"Content-Length":"1"}))[0])
         self.assertEqual(400, self.app.handle("GET", "/", request_headers(**{"Transfer-Encoding":"chunked"}))[0])
 
+    def test_gateway_requires_strict_204_decision(self):
+        app=DashboardApplication(self.store.snapshot,lambda:self.now,require_gateway_decision=True)
+        for value in (None,'200','401','503','204, 204'):
+            self.assertEqual(403,app.handle('GET','/',request_headers(**{'X-SWCCG-Staff-Decision':value}))[0])
+        self.assertEqual(200,app.handle('GET','/',request_headers(**{'X-SWCCG-Staff-Decision':'204'}))[0])
+
     def test_missing_db_is_unavailable_not_created(self):
         missing = self.path.with_name("absent.db")
         app = DashboardApplication(Store(missing).snapshot, lambda: self.now)
@@ -93,6 +99,14 @@ class PrivateSocketTests(unittest.TestCase):
             while chunk := client.recv(8192):
                 chunks.append(chunk)
             return b"".join(chunks)
+
+    @unittest.skipUnless(hasattr(socket,'SO_PEERCRED'),'Linux peer credentials required')
+    def test_gateway_requires_exact_group_and_checks_peer(self):
+        self.directory.chmod(0o750)
+        with PrivateSocketServer(self.path,self.app,gateway_peer_uid=os.geteuid()) as server:
+            self.assertEqual(0o660,stat.S_IMODE(self.path.stat().st_mode))
+            thread=threading.Thread(target=server.handle_request);thread.start()
+            self.assertIn(b'200 OK',self._request(b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n'));thread.join(5)
 
     def test_socket_headers_fixed_route_and_cleanup(self):
         with PrivateSocketServer(self.path, self.app) as server:
