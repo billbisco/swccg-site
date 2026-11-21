@@ -27,11 +27,14 @@ from pathlib import Path
 sys.path.insert(0,str(Path.cwd()))
 from ops import wayback_worker as w
 h=json.load(open('/root/.local/state/swccg-wayback/health.json'))
-if h.get('mode') != 'healthy' or h.get('outcome') == 'paused':
- print(json.dumps({'allowed':False,'rows':[]})); sys.exit(0)
 from datetime import datetime,timezone
 t=datetime.fromisoformat(h['checked_at'].replace('Z','+00:00')).timestamp()
 if not 0<=time.time()-t<=900:
+ print(json.dumps({'allowed':False,'rows':[]})); sys.exit(0)
+if h.get('mode') == 'half_open' and hasattr(w,'reliability'):
+ d=json.load(open(w.DONE)); row=w.reliability.canary_candidate(w,Path('/root/.local/state/swccg-wayback'),d,h)
+ print(json.dumps({'allowed':bool(row),'rows':[row] if row else []})); sys.exit(0)
+if h.get('mode') != 'healthy' or h.get('outcome') == 'paused':
  print(json.dumps({'allowed':False,'rows':[]})); sys.exit(0)
 d=json.load(open(w.DONE)); rows=[r for r in w.verify_candidates(d,limit=len(d)) if r.get('capture')]
 recovery=w.recovery.manual_candidates(w,Path('/root/.local/state/swccg-wayback'),d) if hasattr(w,'recovery') else []

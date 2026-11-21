@@ -95,11 +95,14 @@ def _freshness(observed: int, now: int, max_age: int) -> tuple[str, str | None]:
 ARCHIVE_COUNTS = ("verified", "failed", "pending", "retry", "unverified", "ok", "unknown")
 ARCHIVE_MODES = ("healthy", "open", "half_open", "auth_blocked", "probe_blocked")
 ARCHIVE_OUTCOMES = ("completed", "paused", "failed")
-ARCHIVE_REASONS = {"provider unavailable": "provider_unavailable", "canary unverified; next bounded probe deferred": "canary_unverified"}
+ARCHIVE_REASONS = {"provider unavailable": "provider_unavailable", "canary unverified; next bounded probe deferred": "canary_unverified", "account capacity unavailable":"capacity_wait", "canary source limited":"source_wait", "provider throttled":"provider_throttled"}
 ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "verified_undated", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred", "manpc_verified_24h")
 MANPC_FIELDS = {"started_at":"epoch_seconds", "checked_at":"epoch_seconds", "last_success_at":"epoch_seconds", "next_expected_at":"epoch_seconds", "cooldown_until":"epoch_seconds", "last_verified_count":"count", "attempted":"count", "errors":"count"}
 MANPC_STATES = ("running", "completed", "waiting", "provider_backoff", "error")
 RECOVERY_FIELDS = ("total", "no_job", "auth", "other", "verified", "verified_manpc", "in_progress", "review", "waiting")
+STALE_FIELDS = ("total","verified","manpc","in_progress","review","waiting")
+CAPACITY_FIELDS = ("available","processing","daily_captures","daily_captures_limit","daily_status","daily_status_limit")
+PROVIDER_EVENTS = ("account_sessions","account_daily_limit","url_daily_limit","target_host_limit","target_redirects","unknown_limit","http_throttled","http_unavailable","http_auth","capacity_unknown","capacity_available")
 ARCHIVE_SPECS = (
     tuple((f"archive.{status}", "count", "all") for status in ARCHIVE_COUNTS)
     + tuple((f"archive.mode_{mode}", "boolean", "all") for mode in ARCHIVE_MODES)
@@ -116,6 +119,10 @@ ARCHIVE_SPECS = (
     + tuple((f"archive.manpc_{name}", unit, "all") for name, unit in MANPC_FIELDS.items())
     + tuple((f"archive.manpc_state_{name}", "boolean", "all") for name in MANPC_STATES)
     + tuple((f"archive.recovery_{name}", "count", "all") for name in RECOVERY_FIELDS)
+    + tuple((f"archive.stale_{name}","count","all") for name in STALE_FIELDS)
+    + tuple((f"archive.capacity_{name}","count","all") for name in CAPACITY_FIELDS)
+    + tuple((f"archive.event_{name}","boolean","all") for name in PROVIDER_EVENTS)
+    + (("archive.capacity_checked_at","epoch_seconds","all"),("archive.provider_failure_count","count","all"),("archive.source_limits_active","count","all"))
 )
 
 
@@ -223,6 +230,15 @@ def parse_archive_health(data: dict, now: int, max_age_seconds: int, ledger: Pat
             or recovery['verified_manpc']>recovery['verified']):
         recovery = {}
     metrics += [_sample(f"archive.recovery_{key}",recovery.get(key),"count") for key in RECOVERY_FIELDS]
+    stale=data.get('stale_job_counts')
+    if (not isinstance(stale,dict) or set(stale)!=set(STALE_FIELDS) or any(_count(v) is None for v in stale.values())
+        or stale['total']!=sum(stale[k] for k in ('verified','in_progress','review','waiting')) or stale['manpc']>stale['verified']):stale={}
+    metrics += [_sample(f'archive.stale_{key}',stale.get(key),'count') for key in STALE_FIELDS]
+    capacity=data.get('account_capacity'); capacity=capacity if isinstance(capacity,dict) else {}
+    metrics += [_sample(f'archive.capacity_{key}',_count(capacity.get(key)),'count') for key in CAPACITY_FIELDS]
+    event=data.get('provider_event'); event=event if isinstance(event,str) and event in PROVIDER_EVENTS else None
+    metrics += [_sample(f'archive.event_{key}',int(event==key) if event else None,'boolean') for key in PROVIDER_EVENTS]
+    metrics += [_sample('archive.capacity_checked_at',_epoch(data.get('capacity_checked_at'),latest=observed),'epoch_seconds'),_sample('archive.provider_failure_count',_count(data.get('provider_failure_count')),'count'),_sample('archive.source_limits_active',_count(data.get('source_limits_active')),'count')]
     status, detail = _freshness(observed, now, max_age_seconds)
     if status == "ok" and not (valid_counts and valid_mode and valid_outcome):
         status, detail = "degraded", "partial_receipt"
