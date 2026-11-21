@@ -85,7 +85,7 @@ class DashboardTests(unittest.TestCase):
         for metric_id in ("archive.mode_open", "archive.run_paused"):
             archive["metrics"].append({"metric_id": metric_id, "value": 1, "unit":"boolean", "dimension":"all", "kind":"gauge", "observed_at":1700000000})
         page = render_dashboard(self.snapshot)
-        self.assertIn('class="tile warn"><h2>Archive latest run succeeded</h2><strong>Paused</strong>', page)
+        self.assertIn('class="tile warn"><h2>Archive latest run succeeded</h2><strong>Automatic cooldown</strong>', page)
         self.assertIn('class="tile warn"><h2>Archive provider healthy</h2><strong>Backoff</strong>', page)
         self.assertNotIn('class="tile danger"', page)
 

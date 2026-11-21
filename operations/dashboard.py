@@ -50,6 +50,14 @@ METRIC_LABELS = {
     "archive.awaiting_canary": "Awaiting recovery verification",
     "archive.source_checked_at": "Owner receipt checked at",
     "archive.run_success": "Latest run succeeded",
+    "archive.verified_24h": "Verified in last 24 hours (current ledger)",
+    "archive.verified_7d": "Verified in last 7 days (current ledger)",
+    "archive.failed_transient": "Failed — eligible for weekly retry",
+    "archive.failed_due": "Failed — past weekly retry threshold",
+    "archive.failed_other": "Failed — needs investigation",
+    "archive.verified_manpc": "Verified by MANPC",
+    "archive.manpc_candidates": "MANPC verification candidates",
+    "archive.manpc_deferred": "Explicitly deferred to MANPC",
     "host.memory_available": "Available RAM",
     "host.memory_total": "Total RAM",
     "host.swap_total": "Total swap",
@@ -198,6 +206,28 @@ def _card(title: str, value: str, hint: str, style: str = "neutral") -> str:
     return f'<article class="tile {style}"><h2>{_e(title)}</h2><strong>{_e(value)}</strong><p>{_e(hint)}</p></article>'
 
 
+def _preservation(sources):
+    def value(name):
+        row = _find(sources, "archive", "archive." + name)
+        return _number(row.get("value")) if row else None
+    counts = [value(k) for k in ("verified", "failed", "pending", "retry", "unverified", "ok", "unknown")]
+    if any(v is None for v in counts) or not sum(counts):
+        return '<section class="history"><h2>Preservation progress</h2><p>Complete ledger counts unavailable.</p></section>'
+    total = sum(counts)
+    percentage = 100 * counts[0] / total
+    timer = next((r for r in sources.get("service", {}).get("metrics", []) if isinstance(r, Mapping) and r.get("metric_id") == "service.timer_active" and r.get("dimension") in ("wayback", "swccg-wayback")), {})
+    scheduler = {0: "Stopped", 1: "Running"}.get(timer.get("value"), "Unknown")
+    reason = "Provider unavailable" if value("reason_provider_unavailable") == 1 else "Recovery capture not yet verified" if value("reason_canary_unverified") == 1 else "Reason unavailable"
+    cooldown = value("run_paused") == 1 and (value("mode_open") == 1 or value("mode_half_open") == 1)
+    state = f'<p><strong>Automatic cooldown.</strong> {_e(reason)}. Next eligible retry: {_e(_time(value("next_eligible_at")))}.</p>' if cooldown else ''
+    def count(name):
+        return _value(value(name), "count")
+    return f'''<section class="history"><h2>Preservation progress</h2>{state}<p>Scheduler: {_e(scheduler)} · Last verified: {_e(_time(value("last_verified_at")))}</p>
+    <p><strong>{percentage:.1f}%</strong> · {counts[0]:,} of {total:,} current ledger entries verified</p><progress value="{counts[0]}" max="{total}" style="width:100%;height:1.4rem" aria-label="Verified ledger entries"></progress>
+    <div class="tiles">{_card("Verified in 24 hours", count("verified_24h"), "Current ledger verification timestamps")}{_card("Verified in 7 days", count("verified_7d"), "Current ledger verification timestamps")}{_card("Failed — weekly retry", count("failed_transient"), "Subject to queue and cooldown; due: " + count("failed_due"))}{_card("Failed — investigation", count("failed_other"), "Not automatically reset by the transient rule")}{_card("MANPC lane", count("verified_manpc"), "Verified receipts recorded; candidates: " + count("manpc_candidates") + "; explicitly deferred: " + count("manpc_deferred"))}</div>
+    <p>Counts are current ledger entries, not unique file versions or an immutable activity history. MANPC verifies existing submissions; it does not submit saves.</p></section>'''
+
+
 def _service_table(rows: list[tuple[str, str, str, str]]) -> str:
     services: dict[str, dict[str, str]] = {}
     for metric, dimension, value, _ in rows:
@@ -269,7 +299,7 @@ def render_dashboard(snapshot: Mapping[str, Any], *, preview: bool = False) -> s
         open_mode = _find(sources, "archive", "archive.mode_open")
         recovery = _find(sources, "archive", "archive.mode_half_open")
         if mid == "archive.run_success" and paused and paused.get("value") == 1:
-            rendered, style = "Paused", "warn"
+            rendered, style = "Automatic cooldown" if (open_mode and open_mode.get("value") == 1) or (recovery and recovery.get("value") == 1) else "Paused", "warn"
         elif mid == "archive.mode_healthy" and open_mode and open_mode.get("value") == 1:
             rendered, style = "Backoff", "warn"
         elif mid == "archive.mode_healthy" and recovery and recovery.get("value") == 1:
@@ -286,7 +316,7 @@ def render_dashboard(snapshot: Mapping[str, Any], *, preview: bool = False) -> s
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>SWCCG Operations</title><style>{CSS}</style></head>
 <body><main><div class="masthead"><div><p class="eyebrow">SWCCG.COM &nbsp; / &nbsp; PRIVATE OPERATIONS</p><h1>Operations overview</h1><p class="subtitle">One view of service checks, preservation progress, backups and launch measurement.</p></div><div class="stamp"><span>SNAPSHOT GENERATED</span><strong>{_e(sample)}</strong><small>Historical data shown as collected</small></div></div>{preview_badge}
 <nav aria-label="Dashboard sections">{nav}</nav><div class="tiles">{''.join(cards)}</div>
-<section class="history"><h2>Historical comparisons</h2><p>24-hour, 7-day and 30-day trends are unavailable in this current-snapshot contract. They will be shown when comparable historical buckets and source coverage are supplied. Missing samples are never zero.</p></section>
+{_preservation(sources)}<section class="history"><h2>Historical comparisons</h2><p>Other 24-hour, 7-day and 30-day trends require comparable historical buckets and source coverage. Missing samples are never zero.</p></section>
 {sections}<footer>Private aggregate dashboard · All timestamps in Caracas (UTC−04:00). Source checks do not prove an operational outcome. This view is read-only; it does not submit archive jobs, restart services or run AI.</footer></main></body></html>'''
 
 

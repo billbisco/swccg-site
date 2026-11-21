@@ -95,6 +95,8 @@ def _freshness(observed: int, now: int, max_age: int) -> tuple[str, str | None]:
 ARCHIVE_COUNTS = ("verified", "failed", "pending", "retry", "unverified", "ok", "unknown")
 ARCHIVE_MODES = ("healthy", "open", "half_open", "auth_blocked", "probe_blocked")
 ARCHIVE_OUTCOMES = ("completed", "paused", "failed")
+ARCHIVE_REASONS = {"provider unavailable": "provider_unavailable", "canary unverified; next bounded probe deferred": "canary_unverified"}
+ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred")
 ARCHIVE_SPECS = (
     tuple((f"archive.{status}", "count", "all") for status in ARCHIVE_COUNTS)
     + tuple((f"archive.mode_{mode}", "boolean", "all") for mode in ARCHIVE_MODES)
@@ -106,10 +108,46 @@ ARCHIVE_SPECS = (
        ("archive.oldest_pending_at", "epoch_seconds", "all"),
        ("archive.source_checked_at", "epoch_seconds", "all"),
        ("archive.awaiting_canary", "boolean", "all"))
+    + tuple((f"archive.reason_{reason}", "boolean", "all") for reason in ARCHIVE_REASONS.values())
+    + tuple((f"archive.{name}", "count", "all") for name in ARCHIVE_LEDGER_METRICS)
 )
 
 
-def parse_archive_health(data: dict, now: int, max_age_seconds: int) -> AdapterResult:
+def archive_ledger_metrics(path: Path, now: int, expected: Mapping) -> dict:
+    """Current ledger census, not an append-only event history. No URL leaves this function."""
+    from collections import Counter
+    data = json.loads(_bounded_text(path, 24 * 1024 * 1024), object_pairs_hook=_unique_object)
+    if not isinstance(data, dict) or len(data) > 100000 or any(not isinstance(v, dict) for v in data.values()):
+        raise ValueError("invalid archive ledger")
+    if Counter(v.get("status") for v in data.values()) != Counter(expected):
+        raise ValueError("ledger and receipt disagree")
+    result = dict.fromkeys(ARCHIVE_LEDGER_METRICS, 0)
+    for row in data.values():
+        status = row.get("status")
+        verify = row.get("verify") or {}
+        if not isinstance(verify, dict):
+            raise ValueError("invalid verification receipt")
+        if status == "verified":
+            at = _epoch(verify.get("at"), latest=now)
+            if at is not None and result["verified_24h"] is not None:
+                result["verified_24h"] += now - at <= 86400
+                result["verified_7d"] += now - at <= 7 * 86400
+            elif at is None:
+                # An undated verified row makes historical coverage incomplete.
+                result["verified_24h"] = result["verified_7d"] = None
+            result["verified_manpc"] += verify.get("lane") == "manpc"
+        elif status == "failed":
+            transient = any(s in str(row.get("error") or "").lower() for s in ("stalled spn2", "connection refused", "errno 111", "timed out", "429", "503", "502"))
+            result["failed_transient" if transient else "failed_other"] += 1
+            at = _epoch(row.get("last"), latest=now)
+            result["failed_due"] += bool(transient and at is not None and now - at > 7 * 86400)
+        elif status in {"ok", "pending", "unverified"} and (row.get("capture") or row.get("job_id")):
+            result["manpc_candidates"] += 1
+            result["manpc_deferred"] += verify.get("defer") == "manpc"
+    return result
+
+
+def parse_archive_health(data: dict, now: int, max_age_seconds: int, ledger: Path | None = None) -> AdapterResult:
     """Read owner's URL-ledger status counts, never claim per-version proof."""
     if not isinstance(data, dict):
         return _unknown("archive", now, "invalid_receipt", "error")
@@ -147,6 +185,15 @@ def parse_archive_health(data: dict, now: int, max_age_seconds: int) -> AdapterR
         _sample("archive.source_checked_at", observed, "epoch_seconds"),
         _sample("archive.awaiting_canary", _boolean(data.get("awaiting_canary_verification")), "boolean"),
     ]
+    reason = ARCHIVE_REASONS.get(data.get("reason")) if isinstance(data.get("reason"), str) else None
+    metrics += [_sample(f"archive.reason_{key}", int(reason == key) if reason else None, "boolean") for key in ARCHIVE_REASONS.values()]
+    census = {}
+    if ledger is not None and valid_counts:
+        try:
+            census = archive_ledger_metrics(ledger, now, counts)
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
+    metrics += [_sample(f"archive.{key}", census.get(key), "count") for key in ARCHIVE_LEDGER_METRICS]
     status, detail = _freshness(observed, now, max_age_seconds)
     if status == "ok" and not (valid_counts and valid_mode and valid_outcome):
         status, detail = "degraded", "partial_receipt"
@@ -168,10 +215,11 @@ class ArchiveHealthAdapter:
     path: Path
     max_age_seconds: int = 30 * 60
     read: Callable[[Path], dict] = read_receipt
+    ledger: Path | None = None
 
     def collect(self, now: int) -> AdapterResult:
         try:
-            return parse_archive_health(self.read(self.path), now, self.max_age_seconds)
+            return parse_archive_health(self.read(self.path), now, self.max_age_seconds, self.ledger)
         except FileNotFoundError:
             return _unknown("archive", now, "missing_receipt")
         except (OSError, ValueError, TypeError, RecursionError):
