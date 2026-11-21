@@ -35,7 +35,8 @@ def run(staging):
     for server in (check,data):threading.Thread(target=server.serve_forever,daemon=True).start()
     snippet=(Path(__file__).parent/'staff-gateway.conf').read_text().replace('127.0.0.1:17031',f'127.0.0.1:{check.server_port}').replace('http://unix:/run/swccg-operations-gateway/dashboard.sock:/',f'http://127.0.0.1:{data.server_port}/')
     conf=staging/'fixture-nginx.conf'
-    conf.write_text(f'pid {staging}/nginx.pid; error_log {staging}/nginx-error.log; events {{worker_connections 32;}} http {{ access_log off; client_body_temp_path {staging}/body; proxy_temp_path {staging}/proxy; server {{listen 127.0.0.1:{port}; {snippet} }} }}')
+    conf.write_text(f'pid {staging}/nginx.pid; error_log {staging}/nginx-error.log; events {{worker_connections 32;}} http {{ map $host $swccg_csp_ro {{ default ""; }} map $host $swccg_csp_ro_ep {{ default ""; }} access_log off; client_body_temp_path {staging}/body; proxy_temp_path {staging}/proxy; server {{listen 127.0.0.1:{port}; {snippet} }} }}')
+    subprocess.run(['nginx','-t','-c',str(conf),'-p',str(staging)],check=True,capture_output=True)
     proc=subprocess.Popen(['nginx','-c',str(conf),'-p',str(staging),'-g','daemon off;'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
         def request(path,cookie=None,method='GET'):
