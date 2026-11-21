@@ -96,7 +96,9 @@ ARCHIVE_COUNTS = ("verified", "failed", "pending", "retry", "unverified", "ok", 
 ARCHIVE_MODES = ("healthy", "open", "half_open", "auth_blocked", "probe_blocked")
 ARCHIVE_OUTCOMES = ("completed", "paused", "failed")
 ARCHIVE_REASONS = {"provider unavailable": "provider_unavailable", "canary unverified; next bounded probe deferred": "canary_unverified"}
-ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "verified_undated", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred")
+ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "verified_undated", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred", "manpc_verified_24h")
+MANPC_FIELDS = {"started_at":"epoch_seconds", "checked_at":"epoch_seconds", "last_success_at":"epoch_seconds", "next_expected_at":"epoch_seconds", "cooldown_until":"epoch_seconds", "last_verified_count":"count", "attempted":"count", "errors":"count"}
+MANPC_STATES = ("running", "completed", "waiting", "provider_backoff", "error")
 ARCHIVE_SPECS = (
     tuple((f"archive.{status}", "count", "all") for status in ARCHIVE_COUNTS)
     + tuple((f"archive.mode_{mode}", "boolean", "all") for mode in ARCHIVE_MODES)
@@ -110,6 +112,8 @@ ARCHIVE_SPECS = (
        ("archive.awaiting_canary", "boolean", "all"))
     + tuple((f"archive.reason_{reason}", "boolean", "all") for reason in ARCHIVE_REASONS.values())
     + tuple((f"archive.{name}", "count", "all") for name in ARCHIVE_LEDGER_METRICS)
+    + tuple((f"archive.manpc_{name}", unit, "all") for name, unit in MANPC_FIELDS.items())
+    + tuple((f"archive.manpc_state_{name}", "boolean", "all") for name in MANPC_STATES)
 )
 
 
@@ -136,6 +140,7 @@ def archive_ledger_metrics(path: Path, now: int, expected: Mapping) -> dict:
                 # An undated verified row makes historical coverage incomplete.
                 result["verified_undated"] += 1
             result["verified_manpc"] += verify.get("lane") == "manpc"
+            result["manpc_verified_24h"] += bool(verify.get("lane") == "manpc" and at is not None and now-at <= 86400)
         elif status == "failed":
             transient = any(s in str(row.get("error") or "").lower() for s in ("stalled spn2", "connection refused", "errno 111", "timed out", "429", "503", "502"))
             result["failed_transient" if transient else "failed_other"] += 1
@@ -147,7 +152,7 @@ def archive_ledger_metrics(path: Path, now: int, expected: Mapping) -> dict:
     return result
 
 
-def parse_archive_health(data: dict, now: int, max_age_seconds: int, ledger: Path | None = None) -> AdapterResult:
+def parse_archive_health(data: dict, now: int, max_age_seconds: int, ledger: Path | None = None, manpc: Path | None = None) -> AdapterResult:
     """Read owner's URL-ledger status counts, never claim per-version proof."""
     if not isinstance(data, dict):
         return _unknown("archive", now, "invalid_receipt", "error")
@@ -194,6 +199,20 @@ def parse_archive_health(data: dict, now: int, max_age_seconds: int, ledger: Pat
         except (OSError, ValueError, TypeError, RecursionError):
             pass
     metrics += [_sample(f"archive.{key}", census.get(key), "count") for key in ARCHIVE_LEDGER_METRICS]
+    status_receipt = {}
+    if manpc is not None:
+        try:
+            candidate = read_receipt(manpc)
+            if candidate.get("schema") == 1 and candidate.get("state") in MANPC_STATES and 0 < candidate.get("checked_at", 0) <= now:
+                status_receipt = candidate
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
+    for key, unit in MANPC_FIELDS.items():
+        val = _count(status_receipt.get(key))
+        if unit == "epoch_seconds" and val is not None and val > 4102444800:
+            val = None
+        metrics.append(_sample(f"archive.manpc_{key}", val, unit))
+    metrics += [_sample(f"archive.manpc_state_{key}", int(status_receipt.get("state") == key) if status_receipt else None, "boolean") for key in MANPC_STATES]
     status, detail = _freshness(observed, now, max_age_seconds)
     if status == "ok" and not (valid_counts and valid_mode and valid_outcome):
         status, detail = "degraded", "partial_receipt"
@@ -216,10 +235,11 @@ class ArchiveHealthAdapter:
     max_age_seconds: int = 30 * 60
     read: Callable[[Path], dict] = read_receipt
     ledger: Path | None = None
+    manpc: Path | None = None
 
     def collect(self, now: int) -> AdapterResult:
         try:
-            return parse_archive_health(self.read(self.path), now, self.max_age_seconds, self.ledger)
+            return parse_archive_health(self.read(self.path), now, self.max_age_seconds, self.ledger, self.manpc)
         except FileNotFoundError:
             return _unknown("archive", now, "missing_receipt")
         except (OSError, ValueError, TypeError, RecursionError):

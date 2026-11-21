@@ -233,6 +233,24 @@ def _preservation(sources):
     <p>Counts are current ledger entries, not unique file versions or an immutable activity history. MANPC verifies existing submissions; it does not submit saves.</p></section>'''
 
 
+def _manpc_panel(sources, now):
+    def value(name):
+        row = _find(sources, "archive", "archive.manpc_" + name)
+        return _number(row.get("value")) if row else None
+    observed = value("checked_at")
+    now = _number(now)
+    state = next((label for key, label in (("running", "Verifying"), ("completed", "Online · waiting for next run"), ("waiting", "Waiting · VPS provider hold"), ("provider_backoff", "Waiting · provider cooldown"), ("error", "Error")) if value("state_"+key)==1), "Unknown")
+    if observed is None or now is None:
+        state = "No heartbeat yet"
+    elif now-observed>2400:
+        state = "Offline or task stopped · heartbeat stale"
+    elif value("state_running")==1 and now-observed>600:
+        state = "Run overdue · check Task Scheduler"
+    return f'''<section class="history" id="manpc"><h2>MANPC automatic verification</h2><p><strong>{_e(state)}</strong> · Last heartbeat: {_e(_time(observed))}</p>
+    <div class="tiles">{_card("Last successful batch", _time(value("last_success_at")), "Batch completion, not necessarily new verification")}{_card("Next expected run", _time(value("next_expected_at")), "Approximate; Windows Task Scheduler is authoritative")}{_card("Verified in 24 hours", _value(value("verified_24h"), "count"), "Receipts accepted into the owner ledger")}{_card("Last batch", _value(value("last_verified_count"), "count"), "Receipts sent; attempted: " + _value(value("attempted"), "count") + "; errors: " + _value(value("errors"), "count"))}</div>
+    <p>Task: SWCCG MANPC Verification · 30 minutes, low priority, maximum 10 minutes, no duplicate runs. Stop or disable from Windows Task Scheduler. Last possible provider cooldown: {_e(_time(value("cooldown_until")))}.</p></section>'''
+
+
 def _service_table(rows: list[tuple[str, str, str, str]]) -> str:
     services: dict[str, dict[str, str]] = {}
     for metric, dimension, value, _ in rows:
@@ -321,7 +339,7 @@ def render_dashboard(snapshot: Mapping[str, Any], *, preview: bool = False) -> s
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>SWCCG Operations</title><style>{CSS}</style></head>
 <body><main><div class="masthead"><div><p class="eyebrow">SWCCG.COM &nbsp; / &nbsp; PRIVATE OPERATIONS</p><h1>Operations overview</h1><p class="subtitle">One view of service checks, preservation progress, backups and launch measurement.</p></div><div class="stamp"><span>SNAPSHOT GENERATED</span><strong>{_e(sample)}</strong><small>Historical data shown as collected</small></div></div>{preview_badge}
 <nav aria-label="Dashboard sections">{nav}</nav><div class="tiles">{''.join(cards)}</div>
-{_preservation(sources)}<section class="history"><h2>Historical comparisons</h2><p>Other 24-hour, 7-day and 30-day trends require comparable historical buckets and source coverage. Missing samples are never zero.</p></section>
+{_preservation(sources)}{_manpc_panel(sources, snapshot.get("generated_at"))}<section class="history"><h2>Historical comparisons</h2><p>Other 24-hour, 7-day and 30-day trends require comparable historical buckets and source coverage. Missing samples are never zero.</p></section>
 {sections}<footer>Private aggregate dashboard · All timestamps in Caracas (UTC−04:00). Source checks do not prove an operational outcome. This view is read-only; it does not submit archive jobs, restart services or run AI.</footer></main></body></html>'''
 
 

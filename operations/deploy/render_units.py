@@ -14,6 +14,7 @@ EXPORT_DIR = "/run/swccg-operations-export"
 ARCHIVE_INPUT = "/run/swccg-operations-archive-input.json"
 BACKUP_INPUT = "/run/swccg-operations-backup-input.json"
 LEDGER_INPUT = "/run/swccg-operations-ledger-input.json"
+MANPC_INPUT = "/run/swccg-operations-manpc-input.json"
 
 
 def linux_path(raw, *, allow_root=False):
@@ -67,14 +68,17 @@ StandardError=journal
 
 
 def render_bundle(*, code_dir, store_dir, view_dir, archive_source, backup_source,
-                  data_disk, units, user="swccg-operations", collector_group="swccg-operations", ledger_source=None):
+                  data_disk, units, user="swccg-operations", collector_group="swccg-operations", ledger_source=None, manpc_source=None):
     code_dir, store_dir, view_dir, archive_source, backup_source, data_disk = (
         linux_path(v) for v in (code_dir, store_dir, view_dir, archive_source, backup_source, data_disk))
     user, collector_group = _name(user), _name(collector_group)
     ledger_source = linux_path(ledger_source) if ledger_source else None
-    paths = (code_dir, store_dir, view_dir, archive_source, backup_source, EXPORT_DIR, ARCHIVE_INPUT, BACKUP_INPUT, LEDGER_INPUT) + ((ledger_source,) if ledger_source else ())
+    manpc_source = linux_path(manpc_source) if manpc_source else None
+    paths = (code_dir, store_dir, view_dir, archive_source, backup_source, EXPORT_DIR, ARCHIVE_INPUT, BACKUP_INPUT, LEDGER_INPUT, MANPC_INPUT) + tuple(p for p in (ledger_source,manpc_source) if p)
     ledger_bind = f" -{ledger_source}:{LEDGER_INPUT}" if ledger_source else ""
     ledger_arg = f" --ledger {LEDGER_INPUT}" if ledger_source else ""
+    manpc_bind = f" -{manpc_source}:{MANPC_INPUT}" if manpc_source else ""
+    manpc_arg = f" --manpc {MANPC_INPUT}" if manpc_source else ""
     if any(overlap(a,b) for i,a in enumerate(paths) for b in paths[i+1:]):
         raise ValueError("code, private state, view, receipt and export paths must not overlap")
     if not (PurePosixPath(data_disk) in PurePosixPath(store_dir).parents and
@@ -98,10 +102,10 @@ RuntimeDirectory=swccg-operations-export
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 ProtectHome=tmpfs
-BindReadOnlyPaths=-{archive_source}:{ARCHIVE_INPUT} -{backup_source}:{BACKUP_INPUT}{ledger_bind}
+BindReadOnlyPaths=-{archive_source}:{ARCHIVE_INPUT} -{backup_source}:{BACKUP_INPUT}{ledger_bind}{manpc_bind}
 ReadWritePaths={EXPORT_DIR}
 WorkingDirectory={code_dir}
-ExecStart=/usr/bin/python3 -I -B {code_dir}/operations/deploy/runner.py export --archive {ARCHIVE_INPUT} --backup {BACKUP_INPUT} --target {EXPORT_DIR}/receipts.json{ledger_arg}
+ExecStart=/usr/bin/python3 -I -B {code_dir}/operations/deploy/runner.py export --archive {ARCHIVE_INPUT} --backup {BACKUP_INPUT} --target {EXPORT_DIR}/receipts.json{ledger_arg}{manpc_arg}
 {HARDENING}"""
     unit_args = " ".join("--unit " + ",".join(x for x in (s.dimension,s.service,s.timer) if x is not None) for s in specs)
     collector = f"""[Unit]
@@ -142,6 +146,7 @@ def main(argv=None):
         p.add_argument("--"+name, required=True)
     p.add_argument("--user", default="swccg-operations")
     p.add_argument("--ledger-source")
+    p.add_argument("--manpc-source")
     p.add_argument("--collector-group", default="swccg-operations")
     p.add_argument("--unit", action="append", required=True)
     p.add_argument("--output", required=True, type=Path, help="existing staging directory")
@@ -150,7 +155,7 @@ def main(argv=None):
         bundle = render_bundle(code_dir=args.code_dir, store_dir=args.store_dir,
                                view_dir=args.view_dir, archive_source=args.archive_source,
                                backup_source=args.backup_source, data_disk=args.data_disk,
-                               user=args.user, collector_group=args.collector_group, units=args.unit, ledger_source=args.ledger_source)
+                               user=args.user, collector_group=args.collector_group, units=args.unit, ledger_source=args.ledger_source, manpc_source=args.manpc_source)
         # Refuse to overwrite even a staged review file. Installation is a
         # separate explicit operator step after review and systemd validation.
         if not args.output.is_dir() or any((args.output/n).exists() for n in bundle):
