@@ -46,6 +46,15 @@ def backup_fixture(**overrides):
 
 
 class ArchiveCensusTests(unittest.TestCase):
+    def test_recovery_conservation_and_missing_values(self):
+        recovery={"total":70,"no_job":30,"auth":32,"other":8,"verified":5,"verified_manpc":3,"in_progress":10,"review":20,"waiting":35}
+        d=archive_fixture(failed_recovery_counts=recovery)
+        result=parse_archive_health(d,NOW,600)
+        self.assertEqual(70,value(result,"archive.recovery_total"))
+        self.assertEqual(3,value(result,"archive.recovery_verified_manpc"))
+        recovery['waiting']=34
+        self.assertIsNone(value(parse_archive_health(d,NOW,600),"archive.recovery_total"))
+
     def test_window_failure_and_manpc_counts_and_mismatch(self):
         ledger = {
             "private_url_1": {"status": "verified", "verify": {"at": EARLIER, "lane": "manpc"}},

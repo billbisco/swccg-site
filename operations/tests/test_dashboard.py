@@ -26,6 +26,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Historical comparisons", rendered)
         self.assertNotIn("MOCK PREVIEW", rendered)
 
+    def test_recovery_panel_uses_distinct_fixed_cohort(self):
+        archive=self.snapshot['sources'][0]
+        for key,n in {'total':70,'no_job':30,'auth':32,'other':8,'verified':5,'verified_manpc':3,'in_progress':10,'review':20,'waiting':35}.items():
+            archive['metrics'].append({'metric_id':'archive.recovery_'+key,'value':n,'unit':'count','dimension':'all','kind':'gauge','observed_at':1700000000})
+        page=render_dashboard(self.snapshot)
+        self.assertIn('5 of 70 verified',page)
+        self.assertIn('MANPC accepted: 3',page)
+
     def test_preview_is_labeled_and_has_no_external_dependencies(self):
         rendered = render_dashboard(self.snapshot, preview=True)
         self.assertIn("MOCK PREVIEW", rendered)

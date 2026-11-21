@@ -99,6 +99,7 @@ ARCHIVE_REASONS = {"provider unavailable": "provider_unavailable", "canary unver
 ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "verified_undated", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred", "manpc_verified_24h")
 MANPC_FIELDS = {"started_at":"epoch_seconds", "checked_at":"epoch_seconds", "last_success_at":"epoch_seconds", "next_expected_at":"epoch_seconds", "cooldown_until":"epoch_seconds", "last_verified_count":"count", "attempted":"count", "errors":"count"}
 MANPC_STATES = ("running", "completed", "waiting", "provider_backoff", "error")
+RECOVERY_FIELDS = ("total", "no_job", "auth", "other", "verified", "verified_manpc", "in_progress", "review", "waiting")
 ARCHIVE_SPECS = (
     tuple((f"archive.{status}", "count", "all") for status in ARCHIVE_COUNTS)
     + tuple((f"archive.mode_{mode}", "boolean", "all") for mode in ARCHIVE_MODES)
@@ -114,6 +115,7 @@ ARCHIVE_SPECS = (
     + tuple((f"archive.{name}", "count", "all") for name in ARCHIVE_LEDGER_METRICS)
     + tuple((f"archive.manpc_{name}", unit, "all") for name, unit in MANPC_FIELDS.items())
     + tuple((f"archive.manpc_state_{name}", "boolean", "all") for name in MANPC_STATES)
+    + tuple((f"archive.recovery_{name}", "count", "all") for name in RECOVERY_FIELDS)
 )
 
 
@@ -213,6 +215,14 @@ def parse_archive_health(data: dict, now: int, max_age_seconds: int, ledger: Pat
             val = None
         metrics.append(_sample(f"archive.manpc_{key}", val, unit))
     metrics += [_sample(f"archive.manpc_state_{key}", int(status_receipt.get("state") == key) if status_receipt else None, "boolean") for key in MANPC_STATES]
+    recovery = data.get("failed_recovery_counts")
+    if (not isinstance(recovery,dict) or set(recovery)!=set(RECOVERY_FIELDS)
+            or any(_count(v) is None for v in recovery.values())
+            or recovery['total'] != sum(recovery[k] for k in ('no_job','auth','other'))
+            or recovery['total'] != sum(recovery[k] for k in ('verified','in_progress','review','waiting'))
+            or recovery['verified_manpc']>recovery['verified']):
+        recovery = {}
+    metrics += [_sample(f"archive.recovery_{key}",recovery.get(key),"count") for key in RECOVERY_FIELDS]
     status, detail = _freshness(observed, now, max_age_seconds)
     if status == "ok" and not (valid_counts and valid_mode and valid_outcome):
         status, detail = "degraded", "partial_receipt"

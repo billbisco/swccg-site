@@ -34,8 +34,13 @@ t=datetime.fromisoformat(h['checked_at'].replace('Z','+00:00')).timestamp()
 if not 0<=time.time()-t<=900:
  print(json.dumps({'allowed':False,'rows':[]})); sys.exit(0)
 d=json.load(open(w.DONE)); rows=[r for r in w.verify_candidates(d,limit=len(d)) if r.get('capture')]
-i=(int(time.time())//1800*3)%max(1,len(rows))
-print(json.dumps({'allowed':True,'rows':(rows[i:]+rows[:i])[:3]}))'''
+recovery=w.recovery.manual_candidates(w,Path('/root/.local/state/swccg-wayback'),d) if hasattr(w,'recovery') else []
+slot=int(time.time())//1800
+def take(values,n):
+ i=(slot*n)%max(1,len(values)); return (values[i:]+values[:i])[:n]
+chosen=take(recovery,1); chosen_urls={r['url'] for r in chosen}
+rows=[r for r in rows if r['url'] not in chosen_urls]
+print(json.dumps({'allowed':True,'rows':chosen+take(rows,3-len(chosen))}))'''
 WRITE = '''import json,os,sys,tempfile
 from pathlib import Path
 p=Path('/root/.local/state/swccg-wayback'); x=json.load(sys.stdin)
