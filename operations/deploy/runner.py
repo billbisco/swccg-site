@@ -29,7 +29,7 @@ from operations.health import (ARCHIVE_SPECS, BACKUP_SPECS, ArchiveHealthAdapter
                                BackupHealthAdapter, HostHealthAdapter,
                                SystemdHealthAdapter, UnitSpec, read_receipt)
 from operations.store import Store
-from operations.live_metrics import SECURITY_SPECS,PLAYER_SPECS,AUDIENCE_SPECS,project_network,forum_projection,site_projection
+from operations.live_metrics import SECURITY_SPECS,PLAYER_SPECS,AUDIENCE_SPECS,project_network,forum_projection,site_projection,security_projection
 
 EXPORT_SCHEMA = 1
 EXPORT_MAX_AGE = 180
@@ -90,14 +90,14 @@ def _safe_collect(adapter, source, now):
         return AdapterResult(source, now, (), status="error", detail="adapter_error")
 
 
-def export_receipts(archive: Path, backup: Path, target: Path, now: int, ledger: Path | None = None, manpc: Path | None = None, network: Path | None = None, forum: Path | None = None, forum_previous: Path | None = None, site_audience: Path | None = None):
+def export_receipts(archive: Path, backup: Path, target: Path, now: int, ledger: Path | None = None, manpc: Path | None = None, network: Path | None = None, forum: Path | None = None, forum_previous: Path | None = None, site_audience: Path | None = None, blocked: Path | None = None, blocked_previous: Path | None = None):
     check_epoch(now)
-    if any(_aliases(target, p) for p in (archive, backup, ledger, manpc,network,forum,forum_previous,site_audience) if p is not None):
+    if any(_aliases(target, p) for p in (archive, backup, ledger, manpc,network,forum,forum_previous,site_audience,blocked,blocked_previous) if p is not None):
         raise ValueError("aggregate export may not overwrite an input receipt")
     results = [_safe_collect(ArchiveHealthAdapter(archive, ledger=ledger, manpc=manpc), "archive", now),
                _safe_collect(BackupHealthAdapter(backup), "backup", now)]
     if network is not None:
-        results += [_validate_result(project_network(network,source,now),now) for source in ('security','player')]
+        results += [_validate_result(security_projection(project_network(network,'security',now),blocked,blocked_previous,now),now),_validate_result(project_network(network,'player',now),now)]
     if forum is not None and forum_previous is not None:results.append(_validate_result(site_projection(forum_projection(forum,forum_previous,now),site_audience,now),now))
     payload = dict(schema_version=EXPORT_SCHEMA, exported_at=now,
                    results=[asdict(x) for x in results])
@@ -231,6 +231,7 @@ def parser():
     export.add_argument("--forum",type=Path)
     export.add_argument("--forum-previous",type=Path)
     export.add_argument('--site-audience',type=Path)
+    export.add_argument('--blocked',type=Path);export.add_argument('--blocked-previous',type=Path)
     collect = sub.add_parser("collect")
     for name in ("export", "db", "snapshot", "output", "heartbeat", "lock", "meminfo", "root-disk", "data-disk"):
         collect.add_argument("--"+name, required=True, type=Path)
@@ -250,7 +251,7 @@ def main(argv=None):
     now = int(time.time())
     try:
         if args.mode == "export":
-            export_receipts(args.archive, args.backup, args.target, now, args.ledger, args.manpc,args.network,args.forum,args.forum_previous,args.site_audience)
+            export_receipts(args.archive, args.backup, args.target, now, args.ledger, args.manpc,args.network,args.forum,args.forum_previous,args.site_audience,args.blocked,args.blocked_previous)
         elif args.mode == "check-heartbeat":
             status = heartbeat_status(args.heartbeat, now, args.max_age)
             print(json.dumps(status))

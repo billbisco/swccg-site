@@ -20,6 +20,8 @@ NETWORK_INPUT='/run/swccg-operations-network-input.json'
 FORUM_INPUT='/run/swccg-operations-forum-input.log'
 FORUM_PREVIOUS_INPUT='/run/swccg-operations-forum-previous-input.log'
 SITE_AUDIENCE_INPUT='/run/swccg-operations-site-audience.json'
+BLOCK_INPUT='/run/swccg-operations-blocked.log'
+BLOCK_PREVIOUS_INPUT='/run/swccg-operations-blocked-previous.log'
 
 
 def linux_path(raw, *, allow_root=False):
@@ -73,7 +75,7 @@ StandardError=journal
 
 
 def render_bundle(*, code_dir, store_dir, view_dir, archive_source, backup_source,
-                  data_disk, units, user="swccg-operations", collector_group="swccg-operations", ledger_source=None, manpc_source=None, network=False, forum_source=None, forum_previous=None, site_audience_source=None):
+                  data_disk, units, user="swccg-operations", collector_group="swccg-operations", ledger_source=None, manpc_source=None, network=False, forum_source=None, forum_previous=None, site_audience_source=None, blocked_source=None, blocked_previous=None):
     code_dir, store_dir, view_dir, archive_source, backup_source, data_disk = (
         linux_path(v) for v in (code_dir, store_dir, view_dir, archive_source, backup_source, data_disk))
     user, collector_group = _name(user), _name(collector_group)
@@ -81,8 +83,10 @@ def render_bundle(*, code_dir, store_dir, view_dir, archive_source, backup_sourc
     manpc_source = linux_path(manpc_source) if manpc_source else None
     forum_source=linux_path(forum_source) if forum_source else None; forum_previous=linux_path(forum_previous) if forum_previous else None
     site_audience_source=linux_path(site_audience_source) if site_audience_source else None
+    blocked_source=linux_path(blocked_source) if blocked_source else None;blocked_previous=linux_path(blocked_previous) if blocked_previous else None
+    if bool(blocked_source)!=bool(blocked_previous):raise ValueError('both blocked logs required')
     if bool(forum_source)!=bool(forum_previous):raise ValueError('both forum logs required')
-    paths = (code_dir, store_dir, view_dir, archive_source, backup_source, EXPORT_DIR, ARCHIVE_INPUT, BACKUP_INPUT, LEDGER_INPUT, MANPC_INPUT,NETWORK_DIR,NETWORK_INPUT,FORUM_INPUT,FORUM_PREVIOUS_INPUT,SITE_AUDIENCE_INPUT) + tuple(p for p in (ledger_source,manpc_source,forum_source,forum_previous,site_audience_source) if p)
+    paths = (code_dir, store_dir, view_dir, archive_source, backup_source, EXPORT_DIR, ARCHIVE_INPUT, BACKUP_INPUT, LEDGER_INPUT, MANPC_INPUT,NETWORK_DIR,NETWORK_INPUT,FORUM_INPUT,FORUM_PREVIOUS_INPUT,SITE_AUDIENCE_INPUT,BLOCK_INPUT,BLOCK_PREVIOUS_INPUT) + tuple(p for p in (ledger_source,manpc_source,forum_source,forum_previous,site_audience_source,blocked_source,blocked_previous) if p)
     ledger_bind = f" -{ledger_source}:{LEDGER_INPUT}" if ledger_source else ""
     ledger_arg = f" --ledger {LEDGER_INPUT}" if ledger_source else ""
     manpc_bind = f" -{manpc_source}:{MANPC_INPUT}" if manpc_source else ""
@@ -90,8 +94,9 @@ def render_bundle(*, code_dir, store_dir, view_dir, archive_source, backup_sourc
     extra_bind=(f' -{NETWORK_DIR}/metrics.json:{NETWORK_INPUT}' if network else '')+(f' -{forum_source}:{FORUM_INPUT} -{forum_previous}:{FORUM_PREVIOUS_INPUT}' if forum_source else '')
     extra_arg=(f' --network {NETWORK_INPUT}' if network else '')+(f' --forum {FORUM_INPUT} --forum-previous {FORUM_PREVIOUS_INPUT}' if forum_source else '')
     if site_audience_source:extra_bind+=f' -{site_audience_source}:{SITE_AUDIENCE_INPUT}';extra_arg+=f' --site-audience {SITE_AUDIENCE_INPUT}'
+    if blocked_source:extra_bind+=f' -{blocked_source}:{BLOCK_INPUT} -{blocked_previous}:{BLOCK_PREVIOUS_INPUT}';extra_arg+=f' --blocked {BLOCK_INPUT} --blocked-previous {BLOCK_PREVIOUS_INPUT}'
     network_dep='Wants=swccg-operations-network.service\nAfter=swccg-operations-network.service\n' if network else ''
-    forum_group='SupplementaryGroups=adm\nInaccessiblePaths=/var/log\n' if forum_source else ''
+    forum_group='SupplementaryGroups=adm\nInaccessiblePaths=/var/log\n' if forum_source or blocked_source else ''
     if any(overlap(a,b) for i,a in enumerate(paths) for b in paths[i+1:]):
         raise ValueError("code, private state, view, receipt and export paths must not overlap")
     if not (PurePosixPath(data_disk) in PurePosixPath(store_dir).parents and
@@ -178,6 +183,7 @@ def main(argv=None):
     p.add_argument("--manpc-source")
     p.add_argument('--network',action='store_true');p.add_argument('--forum-source');p.add_argument('--forum-previous')
     p.add_argument('--site-audience-source')
+    p.add_argument('--blocked-source');p.add_argument('--blocked-previous')
     p.add_argument("--collector-group", default="swccg-operations")
     p.add_argument("--unit", action="append", required=True)
     p.add_argument("--output", required=True, type=Path, help="existing staging directory")
@@ -186,7 +192,7 @@ def main(argv=None):
         bundle = render_bundle(code_dir=args.code_dir, store_dir=args.store_dir,
                                view_dir=args.view_dir, archive_source=args.archive_source,
                                backup_source=args.backup_source, data_disk=args.data_disk,
-                               user=args.user, collector_group=args.collector_group, units=args.unit, ledger_source=args.ledger_source, manpc_source=args.manpc_source,network=args.network,forum_source=args.forum_source,forum_previous=args.forum_previous,site_audience_source=args.site_audience_source)
+                               user=args.user, collector_group=args.collector_group, units=args.unit, ledger_source=args.ledger_source, manpc_source=args.manpc_source,network=args.network,forum_source=args.forum_source,forum_previous=args.forum_previous,site_audience_source=args.site_audience_source,blocked_source=args.blocked_source,blocked_previous=args.blocked_previous)
         # Refuse to overwrite even a staged review file. Installation is a
         # separate explicit operator step after review and systemd validation.
         if not args.output.is_dir() or any((args.output/n).exists() for n in bundle):
