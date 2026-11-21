@@ -96,7 +96,7 @@ ARCHIVE_COUNTS = ("verified", "failed", "pending", "retry", "unverified", "ok", 
 ARCHIVE_MODES = ("healthy", "open", "half_open", "auth_blocked", "probe_blocked")
 ARCHIVE_OUTCOMES = ("completed", "paused", "failed")
 ARCHIVE_REASONS = {"provider unavailable": "provider_unavailable", "canary unverified; next bounded probe deferred": "canary_unverified"}
-ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred")
+ARCHIVE_LEDGER_METRICS = ("verified_24h", "verified_7d", "verified_undated", "failed_transient", "failed_due", "failed_other", "verified_manpc", "manpc_candidates", "manpc_deferred")
 ARCHIVE_SPECS = (
     tuple((f"archive.{status}", "count", "all") for status in ARCHIVE_COUNTS)
     + tuple((f"archive.mode_{mode}", "boolean", "all") for mode in ARCHIVE_MODES)
@@ -129,12 +129,12 @@ def archive_ledger_metrics(path: Path, now: int, expected: Mapping) -> dict:
             raise ValueError("invalid verification receipt")
         if status == "verified":
             at = _epoch(verify.get("at"), latest=now)
-            if at is not None and result["verified_24h"] is not None:
+            if at is not None:
                 result["verified_24h"] += now - at <= 86400
                 result["verified_7d"] += now - at <= 7 * 86400
             elif at is None:
                 # An undated verified row makes historical coverage incomplete.
-                result["verified_24h"] = result["verified_7d"] = None
+                result["verified_undated"] += 1
             result["verified_manpc"] += verify.get("lane") == "manpc"
         elif status == "failed":
             transient = any(s in str(row.get("error") or "").lower() for s in ("stalled spn2", "connection refused", "errno 111", "timed out", "429", "503", "502"))
