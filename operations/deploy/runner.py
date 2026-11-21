@@ -29,14 +29,16 @@ from operations.health import (ARCHIVE_SPECS, BACKUP_SPECS, ArchiveHealthAdapter
                                BackupHealthAdapter, HostHealthAdapter,
                                SystemdHealthAdapter, UnitSpec, read_receipt)
 from operations.store import Store
+from operations.live_metrics import SECURITY_SPECS,PLAYER_SPECS,AUDIENCE_SPECS,project_network,forum_projection
 
 EXPORT_SCHEMA = 1
 EXPORT_MAX_AGE = 180
-SPECS = {"archive": ARCHIVE_SPECS, "backup": BACKUP_SPECS}
+SPECS = {"archive": ARCHIVE_SPECS, "backup": BACKUP_SPECS,"security":SECURITY_SPECS,"player":PLAYER_SPECS,"audience":AUDIENCE_SPECS}
+REQUIRED_SOURCES={'archive','backup'}
 SAFE_DETAILS = frozenset({None, "missing_receipt", "invalid_receipt", "source_old",
                           "partial_receipt", "provider_backoff", "provider_blocked",
                           "worker_failed", "worker_paused", "pending_failures",
-                          "discovery_failed", "adapter_error"})
+                          "discovery_failed", "adapter_error","source_limit","source_changed"})
 
 
 def private_write(path: Path, text: str, mode: int = 0o640):
@@ -88,12 +90,15 @@ def _safe_collect(adapter, source, now):
         return AdapterResult(source, now, (), status="error", detail="adapter_error")
 
 
-def export_receipts(archive: Path, backup: Path, target: Path, now: int, ledger: Path | None = None, manpc: Path | None = None):
+def export_receipts(archive: Path, backup: Path, target: Path, now: int, ledger: Path | None = None, manpc: Path | None = None, network: Path | None = None, forum: Path | None = None, forum_previous: Path | None = None):
     check_epoch(now)
-    if any(_aliases(target, p) for p in (archive, backup, ledger, manpc) if p is not None):
+    if any(_aliases(target, p) for p in (archive, backup, ledger, manpc,network,forum,forum_previous) if p is not None):
         raise ValueError("aggregate export may not overwrite an input receipt")
-    results = (_safe_collect(ArchiveHealthAdapter(archive, ledger=ledger, manpc=manpc), "archive", now),
-               _safe_collect(BackupHealthAdapter(backup), "backup", now))
+    results = [_safe_collect(ArchiveHealthAdapter(archive, ledger=ledger, manpc=manpc), "archive", now),
+               _safe_collect(BackupHealthAdapter(backup), "backup", now)]
+    if network is not None:
+        results += [_validate_result(project_network(network,source,now),now) for source in ('security','player')]
+    if forum is not None and forum_previous is not None:results.append(_validate_result(forum_projection(forum,forum_previous,now),now))
     payload = dict(schema_version=EXPORT_SCHEMA, exported_at=now,
                    results=[asdict(x) for x in results])
     private_write(target, json.dumps(payload, allow_nan=False, separators=(",", ":")) + "\n")
@@ -116,7 +121,7 @@ def consume_export(path: Path, now: int):
         if not 0 <= now - exported_at <= EXPORT_MAX_AGE:
             return _unavailable_export(now, "export_stale")
         rows = data["results"]
-        if type(rows) is not list or len(rows) != len(SPECS):
+        if type(rows) is not list or not len(REQUIRED_SOURCES)<=len(rows)<=len(SPECS):
             raise ValueError("invalid export source count")
         results = []
         for row in rows:
@@ -134,7 +139,7 @@ def consume_export(path: Path, now: int):
             # receipt time and verified progress remain untouched as metrics.
             results.append(AdapterResult(result.source, now, result.samples,
                                          status=result.status, detail=result.detail))
-        if {x.source for x in results} != set(SPECS):
+        if not REQUIRED_SOURCES <= {x.source for x in results} or len({x.source for x in results})!=len(results):
             raise ValueError("export source duplication")
         return tuple(results)
     except FileNotFoundError:
@@ -222,6 +227,9 @@ def parser():
         export.add_argument("--"+name, required=True, type=Path)
     export.add_argument("--ledger", type=Path)
     export.add_argument("--manpc", type=Path)
+    export.add_argument("--network",type=Path)
+    export.add_argument("--forum",type=Path)
+    export.add_argument("--forum-previous",type=Path)
     collect = sub.add_parser("collect")
     for name in ("export", "db", "snapshot", "output", "heartbeat", "lock", "meminfo", "root-disk", "data-disk"):
         collect.add_argument("--"+name, required=True, type=Path)
@@ -240,7 +248,7 @@ def main(argv=None):
     now = int(time.time())
     try:
         if args.mode == "export":
-            export_receipts(args.archive, args.backup, args.target, now, args.ledger, args.manpc)
+            export_receipts(args.archive, args.backup, args.target, now, args.ledger, args.manpc,args.network,args.forum,args.forum_previous)
         elif args.mode == "check-heartbeat":
             status = heartbeat_status(args.heartbeat, now, args.max_age)
             print(json.dumps(status))
