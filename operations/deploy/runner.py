@@ -88,11 +88,11 @@ def _safe_collect(adapter, source, now):
         return AdapterResult(source, now, (), status="error", detail="adapter_error")
 
 
-def export_receipts(archive: Path, backup: Path, target: Path, now: int, ledger: Path | None = None):
+def export_receipts(archive: Path, backup: Path, target: Path, now: int, ledger: Path | None = None, manpc: Path | None = None):
     check_epoch(now)
-    if any(_aliases(target, p) for p in (archive, backup, ledger) if p is not None):
+    if any(_aliases(target, p) for p in (archive, backup, ledger, manpc) if p is not None):
         raise ValueError("aggregate export may not overwrite an input receipt")
-    results = (_safe_collect(ArchiveHealthAdapter(archive, ledger=ledger), "archive", now),
+    results = (_safe_collect(ArchiveHealthAdapter(archive, ledger=ledger, manpc=manpc), "archive", now),
                _safe_collect(BackupHealthAdapter(backup), "backup", now))
     payload = dict(schema_version=EXPORT_SCHEMA, exported_at=now,
                    results=[asdict(x) for x in results])
@@ -221,6 +221,7 @@ def parser():
     for name in ("archive", "backup", "target"):
         export.add_argument("--"+name, required=True, type=Path)
     export.add_argument("--ledger", type=Path)
+    export.add_argument("--manpc", type=Path)
     collect = sub.add_parser("collect")
     for name in ("export", "db", "snapshot", "output", "heartbeat", "lock", "meminfo", "root-disk", "data-disk"):
         collect.add_argument("--"+name, required=True, type=Path)
@@ -239,7 +240,7 @@ def main(argv=None):
     now = int(time.time())
     try:
         if args.mode == "export":
-            export_receipts(args.archive, args.backup, args.target, now, args.ledger)
+            export_receipts(args.archive, args.backup, args.target, now, args.ledger, args.manpc)
         elif args.mode == "check-heartbeat":
             status = heartbeat_status(args.heartbeat, now, args.max_age)
             print(json.dumps(status))
