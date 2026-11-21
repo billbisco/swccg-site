@@ -80,6 +80,27 @@ METRIC_LABELS = {
     "backup.discovery_failures": "Backup discovery failures",
     "backup.coverage_partial": "Task totals are partial",
     "backup.source_checked_at": "Backup receipt checked at",
+    "audience.forum_page_requests":"Recorded forum page navigations (24h)",
+    "audience.forum_likely_browser_requests":"Likely browser requests (24h)",
+    "audience.forum_known_automation_requests":"Automation-indicating requests (24h)",
+    "audience.forum_unknown_requests":"Unclassified page requests (24h)",
+    "audience.forum_browser_address_groups":"Distinct likely-browser address groups (24h estimate)",
+    "audience.forum_parsed_lines":"Parsed forum log lines (24h)",
+    "audience.forum_invalid_lines":"Unparsed lines in scanned files",
+    "audience.forum_coverage_seconds":"Recorded log coverage duration",
+    "player.games":"Recorded game results",
+    "player.partial_ids":"Results with missing participant IDs",
+    "player.participants":"Distinct recorded participant IDs",
+    "player.local_accounts":"Local Play account rows created",
+    "player.source_checked_at":"Play aggregate checked at",
+    "security.community_active":"Community blocklist records (active)",
+    "security.local_active":"Local security-engine decisions (active)",
+    "security.community_dropped_packets":"Packets dropped — community blocklist",
+    "security.local_dropped_packets":"Packets dropped — local engine",
+    "security.community_dropped_bytes":"Bytes dropped — community blocklist",
+    "security.local_dropped_bytes":"Bytes dropped — local engine",
+    "security.processed_packets":"Packets processed by bouncer",
+    "security.source_checked_at":"Security aggregate checked at",
 }
 STATUS_LABELS = {
     "ok": ("Observed", "good"),
@@ -173,6 +194,7 @@ def _valid_dimension(source_id: str, dimension: Any) -> str | None:
         return DIMENSIONS[dimension]
     if source_id == "service":
         return SERVICE_DIMENSIONS.get(dimension)
+    if source_id == "player":return {"rolling_1d":"24 hours","rolling_7d":"7 days","rolling_30d":"30 days"}.get(dimension)
     return None
 
 
@@ -308,6 +330,8 @@ def _source_section(source_id: str, source: Mapping[str, Any] | None) -> str:
     data = _service_table(rows) if source_id == "service" else ''
     if not data:
         data = ('<div class="table-scroll"><table><thead><tr><th scope="col">Metric</th><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Observed at</th></tr></thead><tbody>' + table + '</tbody></table></div>') if table else '<p class="empty">No supported aggregate values in this sample. Coverage is missing.</p>'
+    notes={"audience":"Pilot: production forum log only. Address groups are a rough estimate, not people; shared mixed production/test logs are excluded. No raw addresses or user agents are retained.","player":"Play-only recorded game results and distinct IDs in recorded outcomes; missing IDs limit coverage. Local player rows are not deduplicated sign-in registrations. Live sessions and instrumented funnel events are not yet measured.","security":"Source-owned firewall counters: cumulative since bouncer accounting reset. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
+    if source_id in notes:data=f'<p class="service-note">{_e(notes[source_id])}</p>'+data
     return f'''<section id="{source_id}" class="panel"><header><div><h2>{_e(name)}</h2><p>{_e(description)}</p></div><span class="badge {style}">{_e(label)}</span></header>
       <dl class="freshness"><div><dt>Source observed</dt><dd>{_e(_time(source.get('observed_at')))}</dd></div><div><dt>Last successful source read</dt><dd>{_e(_time(source.get('last_success_at')))}</dd></div></dl>
       {data}</section>'''
