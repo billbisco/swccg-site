@@ -7,7 +7,7 @@ from .contracts import AdapterResult,Metric
 from .health import read_receipt
 
 SECURITY_KEYS=('community_active','community_dropped_packets','community_dropped_bytes','local_active','local_dropped_packets','local_dropped_bytes','processed_packets','interval_seconds','daily_community_dropped_packets','daily_local_dropped_packets','daily_processed_packets','daily_coverage_seconds')
-BLOCK_KEYS=('wiki_blocked_requests_15m','wiki_blocked_429_15m','wiki_blocked_503_15m','wiki_blocked_other_15m','wiki_blocked_coverage_seconds','wiki_blocked_invalid_lines')
+BLOCK_KEYS=('wiki_blocked_requests_15m','wiki_blocked_429_15m','wiki_blocked_444_15m','wiki_blocked_503_15m','wiki_blocked_other_15m','wiki_blocked_coverage_seconds','wiki_blocked_invalid_lines')
 PLAYER_KEYS=('games','partial_ids','participants','local_accounts')
 PLAY_STATUS_KEYS=('active_1d','active_7d','active_all','played_1d','played_7d','played_all','tables','hall')
 AUDIENCE_KEYS=('page_requests','likely_browser_requests','known_automation_requests','unknown_requests','browser_address_groups','parsed_lines','invalid_lines','coverage_seconds')
@@ -123,14 +123,14 @@ def site_projection(forum,site_path,now):
 
 def blocked_counts(current,previous,now):
     """Bounded tails only; no request, address or UA is retained."""
-    start=now-900;first=None;invalid=0;totals=dict.fromkeys(BLOCK_KEYS,0); identities=set();current_cutoff=None
+    start=now-900;first=None;invalid=0;totals=dict.fromkeys(BLOCK_KEYS,0); identities=set()
     try:
-        for path in (previous,current):
+        for path in (current,previous):
             st=path.stat()
             if (st.st_dev,st.st_ino) in identities:return {}
             identities.add((st.st_dev,st.st_ino))
             with path.open('rb') as f:
-                offset=max(0,st.st_size-2*1024*1024);f.seek(offset);raw=f.read(2*1024*1024)
+                offset=max(0,st.st_size-4*1024*1024);f.seek(offset);raw=f.read(4*1024*1024)
             if (path.stat().st_dev,path.stat().st_ino)!=(st.st_dev,st.st_ino):return {}
             lines=raw.splitlines()
             if offset:lines=lines[1:]
@@ -141,11 +141,12 @@ def blocked_counts(current,previous,now):
                 try:ts=int(datetime.strptime(m[1].decode('ascii'),'%d/%b/%Y:%H:%M:%S %z').timestamp())
                 except (ValueError,UnicodeError):invalid+=1;continue
                 first=ts if first is None else min(ts,first)
-                if path==current and offset:current_cutoff=ts if current_cutoff is None else min(current_cutoff,ts)
                 if start<=ts<=now:
                     totals['wiki_blocked_requests_15m']+=1
-                    key='wiki_blocked_'+(m[2].decode() if m[2] in (b'429',b'503') else 'other')+'_15m';totals[key]+=1
-        if current_cutoff is not None and current_cutoff>start:first=current_cutoff
+                    key='wiki_blocked_'+(m[2].decode() if m[2] in (b'429',b'444',b'503') else 'other')+'_15m';totals[key]+=1
+            # No need to read the previous file if the current tail covers the window,
+            # or was truncated inside the window and an older file cannot fill that gap.
+            if path==current and (offset or (first is not None and first<=start)):break
         totals['wiki_blocked_coverage_seconds']=min(900,max(0,now-first)) if first is not None else 0
         totals['wiki_blocked_invalid_lines']=invalid
         return totals

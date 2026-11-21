@@ -128,6 +128,7 @@ METRIC_LABELS = {
     "security.daily_coverage_seconds":"Coverage of reported daily intervals",
     "security.wiki_blocked_requests_15m":"Wiki rate/concurrency blocked requests (15m)",
     "security.wiki_blocked_429_15m":"Wiki blocked HTTP 429 (15m)",
+    "security.wiki_blocked_444_15m":"Wiki blocked connection closes (nginx 444, 15m)",
     "security.wiki_blocked_503_15m":"Wiki blocked HTTP 503 (15m)",
     "security.wiki_blocked_other_15m":"Other Wiki blocked statuses (15m)",
     "security.wiki_blocked_coverage_seconds":"Blocked-log window coverage",
