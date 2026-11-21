@@ -68,6 +68,41 @@ The following is an example exact install sequence for an authorized operator. S
 
    Observe at least one naturally scheduled second invocation after the initial manual start, and confirm heartbeat age, fresh DB observations and actual owner/host status. A healthy timer without a recent completed heartbeat is not proof of collection. If a second run is still pending or unavailable, report the exact state; don't claim autonomous operation yet. Keep separate alerting/watchdog work scoped to an approved independent local monitor. The read-only heartbeat checker is provided, but this bundle does not install a second monitoring timer, send alerts or claim whole-host-outage detection.
 
+## Separately approved SSH-only reader (optional)
+
+The interim dashboard has no public HTTP route. Its private Unix-socket server recomputes aggregate freshness on every authorized request. Do not proxy to it publicly or add a new firewall port. This optional service can be reviewed and installed after the collector is verified.
+
+Use a separate no-login reader UID and a dedicated read group, **not the collector's group**. Verify existing identities before creation. Example: `groupadd --system swccg-operations-read`, `useradd --system --gid swccg-operations-read --no-create-home --shell /usr/sbin/nologin swccg-operations-reader`. No web service user is added to either group. The SSH account must be root or the explicitly authorized socket owner; do not relax the socket to make another account work.
+
+To avoid copying a potentially 250-MiB SQLite database every five minutes, use a read-only service mount of the aggregate store. At a deliberate interval between collector runs, change the ownership/modes of **only the dedicated store directory and exact DB file** as follows (substitute the actual path):
+
+```sh
+chown swccg-operations:swccg-operations-read /mnt/data/operations-private
+chmod 2750 /mnt/data/operations-private
+chown swccg-operations:swccg-operations-read /mnt/data/operations-private/metrics.sqlite
+chmod 0640 /mnt/data/operations-private/metrics.sqlite
+```
+
+Confirm the writer owns the directory/DB, the reader's primary group is the read group, and its UID cannot write the directory or DB. SQLite rollback journal files inherit the database file permission and setgid parent group; verify read access during ordinary writes on the actual filesystem. The reader uses `mode=ro` plus `query_only` and systemd read-only mount restriction. Any lock/hot-journal condition is a temporary HTTP unavailable result, not permission to weaken the read-only mount. Keep the collector lock 0600; the runtime exporter directory remains root:collector 0750 with no reader access. The private JSON/HTML view directory need not be shared, because the listener renders directly from the aggregate DB. Do not copy source receipts or share `/root`.
+
+Generate and validate the additional service separately so the collector-only installed units stay unchanged:
+
+```sh
+python3 -m operations.deploy.reader_unit --code-dir /opt/example-operations-code --store-dir /mnt/data/operations-private --output /mnt/data/operations-unit-review
+systemd-analyze verify /mnt/data/operations-unit-review/swccg-operations-reader.service
+install -o root -g root -m 0644 /mnt/data/operations-unit-review/swccg-operations-reader.service /etc/systemd/system/swccg-operations-reader.service
+systemctl daemon-reload
+systemctl start swccg-operations-reader.service
+```
+
+The unit's `RuntimeDirectory=swccg-operations-reader`, mode 0700, owner reader UID is cleaned by the service lifecycle; it creates `/run/swccg-operations-reader/dashboard.sock` mode 0600. Test first on the server with an authorized operator, e.g. `curl --unix-socket /run/swccg-operations-reader/dashboard.sock http://localhost/` (check generated HTML locally, do not post full operational output). Verify the socket/parent exact modes and owner, service running, DB read-only and exporter unreadable by reader. Verify no TCP listen port is introduced and unexpected requests are denied. For actual PC access use the existing authorized SSH host alias:
+
+```sh
+ssh -N -L 127.0.0.1:8765:/run/swccg-operations-reader/dashboard.sock approved-admin-host
+```
+
+Open `http://127.0.0.1:8765/` while forwarding is active; never bind the local port to all interfaces. After end-to-end verification, enable just `swccg-operations-reader.service` if the approved rollout calls for persistent service, with `systemctl enable swccg-operations-reader.service`. Closing the SSH forward does not stop the collector or reader service. No reverse proxy, DNS change, new network listener, browser credential or general public dashboard access is configured. If a root-admin SSH forward is unavailable, report that limitation instead of making the private socket group/world-accessible.
+
 ## Rollback and maintenance
 
 The reversible rollback is specific to these new units:
@@ -78,3 +113,5 @@ systemctl stop swccg-operations-collector.service swccg-operations-export.servic
 ```
 
 This does not touch any preservation/backup worker, restore old source receipts, change raw permissions, delete state or change account credentials. Preserve the exact DB/aggregate outputs privately for diagnosis and backup. Revert only the reviewed code/configuration for this bundle if required, validate exact replacement units and daemon-reload before a deliberate re-enable. Removing the dedicated units, account and stored data is a separate explicit cleanup decision. An old generated HTML file is a static historical snapshot; never present it as live status after disabling the collector.
+
+If the optional reader was enabled, rollback it first with `systemctl disable --now swccg-operations-reader.service`, then close the PC's SSH forwarding session. The systemd runtime directory cleans its own socket. If reverting the reader group access, return only the dedicated aggregate store directory/DB to collector ownership and modes 0700/0600 at a safe interval; leave original owner receipts untouched. Remove neither account nor stored data without separate authorization.

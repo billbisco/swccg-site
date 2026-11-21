@@ -227,6 +227,9 @@ def parser():
     check = sub.add_parser("check-heartbeat", help="independent read-only collector freshness check")
     check.add_argument("--heartbeat", required=True, type=Path)
     check.add_argument("--max-age", type=int, default=900)
+    serve = sub.add_parser("serve-private", help="read-only owner-only Unix socket listener")
+    serve.add_argument("--db", required=True, type=Path)
+    serve.add_argument("--socket", required=True, type=Path)
     return p
 
 
@@ -240,6 +243,9 @@ def main(argv=None):
             status = heartbeat_status(args.heartbeat, now, args.max_age)
             print(json.dumps(status))
             return 0 if status["status"] == "ok" else 1
+        elif args.mode == "serve-private":
+            from operations.private_http import main as serve
+            return serve(["--db", str(args.db), "--socket", str(args.socket)])
         else:
             run_collection(args, now, clock=time.time)
     except (OSError, ValueError, TypeError, sqlite3.Error):

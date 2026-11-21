@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 
 from operations.deploy.render_units import render_bundle
+from operations.deploy.reader_unit import render_reader_unit
 from operations.deploy.runner import (EXPORT_MAX_AGE, consume_export, export_receipts,
                                       exclusive_run, heartbeat_status, run_collection)
 
@@ -122,6 +123,20 @@ class UnitGenerationTests(unittest.TestCase):
                         {"user":"root"},{"units":["archive,archive.timer"]}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 render_bundle(**self.config(**changes))
+
+    def test_reader_has_distinct_user_and_read_only_db_mount(self):
+        text = render_reader_unit("/opt/operations", "/mnt/data/private")
+        self.assertIn("User=swccg-operations-reader\n", text)
+        self.assertIn("Group=swccg-operations-read\n", text)
+        self.assertIn("ReadOnlyPaths=/mnt/data/private\n", text)
+        self.assertNotIn("ReadWritePaths=/mnt/data/private", text)
+        self.assertIn("RuntimeDirectoryMode=0700", text)
+        self.assertIn("RestrictAddressFamilies=AF_UNIX", text)
+        self.assertIn("serve-private --db /mnt/data/private/metrics.sqlite --socket /run/swccg-operations-reader/dashboard.sock",text)
+        self.assertNotIn("--listen", text)
+        for bad in ({"reader":"swccg-operations"},{"read_group":"swccg-operations"}):
+            with self.assertRaises(ValueError):
+                render_reader_unit("/opt/operations","/mnt/data/private",**bad)
 
 
 if __name__ == "__main__":
