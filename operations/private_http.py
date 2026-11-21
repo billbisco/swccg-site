@@ -17,6 +17,8 @@ from pathlib import Path
 import re
 import signal
 import socketserver
+import socket
+import struct
 import sqlite3
 import stat
 import sys
@@ -50,9 +52,10 @@ def _error(status: int, message: str) -> tuple[int, str, bytes]:
 class DashboardApplication:
     """Just the aggregate HTML read, callable independently of the listener."""
 
-    def __init__(self, snapshot: Callable[[int], dict], clock: Callable[[], float] = time.time):
+    def __init__(self, snapshot: Callable[[int], dict], clock: Callable[[], float] = time.time, require_gateway_decision=False):
         self.snapshot = snapshot
         self.clock = clock
+        self.require_gateway_decision=require_gateway_decision
 
     @staticmethod
     def _single(headers, name: str) -> str | None:
@@ -74,10 +77,12 @@ class DashboardApplication:
             site = self._single(headers, "Sec-Fetch-Site")
             length = self._single(headers, "Content-Length")
             transfer = self._single(headers, "Transfer-Encoding")
+            decision=self._single(headers,'X-SWCCG-Staff-Decision')
         except ValueError:
             return _error(400, "Bad request")
         if host is None or LOCAL_HOST.fullmatch(host) is None:
             return _error(403, "Not allowed")
+        if self.require_gateway_decision and decision!='204':return _error(403,'Staff authorization required')
         if ":" in host and not 1 <= int(host.rsplit(":", 1)[1]) <= 65535:
             return _error(400, "Bad request")
         if (origin is not None and origin != "http://" + host) or site not in (None, "none", "same-origin"):
@@ -150,7 +155,7 @@ class PrivateSocketServer(_UnixServer):
 
     request_queue_size = 4
 
-    def __init__(self, socket_path: Path, application: DashboardApplication):
+    def __init__(self, socket_path: Path, application: DashboardApplication, gateway_peer_uid=None):
         if os.name != "posix" or _UnixServer is object:
             raise ValueError("private Unix listener requires POSIX")
         requested = Path(socket_path)
@@ -158,8 +163,10 @@ class PrivateSocketServer(_UnixServer):
             raise ValueError("absolute private socket path required")
         parent = requested.parent.resolve(strict=True)
         info = parent.stat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            raise ValueError("socket directory must be owner-only")
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():raise ValueError('socket directory ownership differs')
+        if gateway_peer_uid is None and info.st_mode & 0o077:raise ValueError('socket directory must be owner-only')
+        if gateway_peer_uid is not None and (not hasattr(socket,'SO_PEERCRED') or stat.S_IMODE(info.st_mode)!=0o750 or info.st_gid!=os.getegid()):raise ValueError('gateway directory must have exact private group mode')
+        self.gateway_peer_uid=gateway_peer_uid
         path = parent / requested.name
         # Never delete an existing endpoint (including a symlink or stale
         # socket); its operator must explicitly reconcile it first.
@@ -173,7 +180,7 @@ class PrivateSocketServer(_UnixServer):
             self.server_bind()
             info = path.lstat()
             self.socket_identity = (info.st_dev, info.st_ino)
-            os.chmod(path, 0o600)
+            os.chmod(path,0o660 if gateway_peer_uid is not None else 0o600)
             self.server_activate()
         except BaseException:
             self.server_close()
@@ -181,6 +188,10 @@ class PrivateSocketServer(_UnixServer):
 
     def get_request(self):
         connection, address = super().get_request()
+        if self.gateway_peer_uid is not None:
+            _, uid, _ = struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
+            if uid not in (0,self.gateway_peer_uid):
+                connection.close(); raise ConnectionError('untrusted gateway peer')
         connection.settimeout(REQUEST_TIMEOUT_SECONDS)
         return connection, address
 
@@ -207,11 +218,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, required=True, help="existing aggregate SQLite DB (read only)")
     parser.add_argument("--socket", type=Path, required=True, help="absolute path in existing owner-only directory")
+    parser.add_argument('--gateway-peer-uid',type=int)
     args = parser.parse_args(argv)
     terminate = None
     try:
         store = Store(args.db)
-        with PrivateSocketServer(args.socket, DashboardApplication(store.snapshot)) as server:
+        if args.gateway_peer_uid is not None and args.gateway_peer_uid<=0:raise ValueError('invalid gateway peer')
+        with PrivateSocketServer(args.socket, DashboardApplication(store.snapshot,require_gateway_decision=args.gateway_peer_uid is not None),args.gateway_peer_uid) as server:
             # Graceful systemd/SSH stop releases only our exact socket. For an
             # abrupt crash, let the operator or approved RuntimeDirectory
             # lifecycle reconcile its dedicated directory; never auto-unlink.

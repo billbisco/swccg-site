@@ -240,6 +240,7 @@ def parser():
     serve = sub.add_parser("serve-private", help="read-only owner-only Unix socket listener")
     serve.add_argument("--db", required=True, type=Path)
     serve.add_argument("--socket", required=True, type=Path)
+    serve.add_argument('--gateway-peer-uid',type=int)
     return p
 
 
@@ -255,7 +256,9 @@ def main(argv=None):
             return 0 if status["status"] == "ok" else 1
         elif args.mode == "serve-private":
             from operations.private_http import main as serve
-            return serve(["--db", str(args.db), "--socket", str(args.socket)])
+            options=["--db", str(args.db), "--socket", str(args.socket)]
+            if args.gateway_peer_uid is not None:options+=['--gateway-peer-uid',str(args.gateway_peer_uid)]
+            return serve(options)
         else:
             run_collection(args, now, clock=time.time)
     except (OSError, ValueError, TypeError, sqlite3.Error):
