@@ -126,6 +126,12 @@ METRIC_LABELS = {
     "security.daily_local_dropped_packets":"Local-engine packets dropped (recorded 24h intervals)",
     "security.daily_processed_packets":"Packets processed (recorded 24h intervals)",
     "security.daily_coverage_seconds":"Coverage of reported daily intervals",
+    "security.wiki_blocked_requests_15m":"Wiki rate/concurrency blocked requests (15m)",
+    "security.wiki_blocked_429_15m":"Wiki blocked HTTP 429 (15m)",
+    "security.wiki_blocked_503_15m":"Wiki blocked HTTP 503 (15m)",
+    "security.wiki_blocked_other_15m":"Other Wiki blocked statuses (15m)",
+    "security.wiki_blocked_coverage_seconds":"Blocked-log window coverage",
+    "security.wiki_blocked_invalid_lines":"Unparsed lines in bounded blocked-log tails",
 }
 STATUS_LABELS = {
     "ok": ("Observed", "good"),
