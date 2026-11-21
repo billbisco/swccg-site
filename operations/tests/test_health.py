@@ -46,6 +46,15 @@ def backup_fixture(**overrides):
 
 
 class ArchiveCensusTests(unittest.TestCase):
+    def test_provider_capacity_and_stale_counts_are_typed_and_conserved(self):
+        d=archive_fixture(provider_event='account_sessions',provider_failure_count=3,capacity_checked_at=EARLIER,account_capacity={'available':0,'processing':3,'private':'not exported'},stale_job_counts={'total':12,'verified':2,'manpc':1,'in_progress':3,'review':1,'waiting':6})
+        r=parse_archive_health(d,NOW,600)
+        self.assertEqual(0,value(r,'archive.capacity_available'))
+        self.assertEqual(1,value(r,'archive.event_account_sessions'))
+        self.assertEqual(12,value(r,'archive.stale_total'))
+        self.assertNotIn('not exported',str(r))
+        d['stale_job_counts']['waiting']=7
+        self.assertIsNone(value(parse_archive_health(d,NOW,600),'archive.stale_total'))
     def test_recovery_conservation_and_missing_values(self):
         recovery={"total":70,"no_job":30,"auth":32,"other":8,"verified":5,"verified_manpc":3,"in_progress":10,"review":20,"waiting":35}
         d=archive_fixture(failed_recovery_counts=recovery)

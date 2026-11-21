@@ -34,6 +34,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('5 of 70 verified',page)
         self.assertIn('MANPC accepted: 3',page)
 
+    def test_provider_reliability_panel_shows_typed_event(self):
+        a=self.snapshot['sources'][0]
+        for key,n,unit in [('event_account_sessions',1,'boolean'),('capacity_available',0,'count'),('capacity_processing',2,'count'),('stale_total',12,'count')]:
+            a['metrics'].append({'metric_id':'archive.'+key,'value':n,'unit':unit,'dimension':'all','kind':'gauge','observed_at':1700000000})
+        p=render_dashboard(self.snapshot)
+        self.assertIn('Account capacity exhausted',p)
+        self.assertIn('Available capture sessions</h2><strong>0</strong>',p)
+
     def test_preview_is_labeled_and_has_no_external_dependencies(self):
         rendered = render_dashboard(self.snapshot, preview=True)
         self.assertIn("MOCK PREVIEW", rendered)

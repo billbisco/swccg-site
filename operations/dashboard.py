@@ -218,8 +218,8 @@ def _preservation(sources):
     percentage = 100 * counts[0] / total
     timer = next((r for r in sources.get("service", {}).get("metrics", []) if isinstance(r, Mapping) and r.get("metric_id") == "service.timer_active" and r.get("dimension") in ("wayback", "swccg-wayback")), {})
     scheduler = {0: "Stopped", 1: "Running"}.get(timer.get("value"), "Unknown")
-    reason = "Provider unavailable" if value("reason_provider_unavailable") == 1 else "Recovery capture not yet verified" if value("reason_canary_unverified") == 1 else "Reason unavailable"
-    cooldown = value("run_paused") == 1 and (value("mode_open") == 1 or value("mode_half_open") == 1)
+    reason = next((label for key,label in (("provider_unavailable","Provider unavailable"),("provider_throttled","Provider throttled"),("canary_unverified","Recovery capture not yet verified"),("capacity_wait","Account capture capacity unavailable"),("source_wait","Recovery source-specific limit")) if value("reason_"+key)==1),"Reason unavailable")
+    cooldown = value("run_paused") == 1 and (value("mode_open") == 1 or value("mode_half_open") == 1 or value("reason_capacity_wait")==1)
     state = f'<p><strong>Automatic cooldown.</strong> {_e(reason)}. Next eligible retry: {_e(_time(value("next_eligible_at")))}.</p>' if cooldown else ''
     def count(name):
         return _value(value(name), "count")
@@ -262,6 +262,18 @@ def _recovery_panel(sources):
     progress=f'<progress value="{verified}" max="{total}" style="width:100%;height:1.4rem" aria-label="Recovered captures"></progress>' if total else ''
     return f'''<section class="history" id="archive-recovery"><h2>Historical failed capture recovery</h2><p><strong>{count('verified')} of {count('total')} verified</strong> · Fixed historical cohort</p>{progress}<p>Original failures: {count('auth')} authentication · {count('no_job')} no job ID · {count('other')} other.</p>
     <div class="tiles">{_card('Verified',count('verified'),'MANPC accepted: '+count('verified_manpc'))}{_card('In progress',count('in_progress'),'Existing capture or ordinary owner retry')}{_card('Waiting',count('waiting'),'Awaiting bounded reconciliation')}{_card('Needs review',count('review'),'No matching capture, excluded, or outside active queue')}</div><p>Existing captured content is checked first. Only active queued requests can return to the VPS submission loop after a definitive no-capture result. Provider holds are respected. Original failure evidence is retained.</p></section>'''
+
+
+def _reliability_panel(sources):
+    def v(key):
+        row=_find(sources,'archive','archive.'+key)
+        return _number(row.get('value')) if row else None
+    def count(key):return _value(v(key),'count')
+    events={'account_sessions':'Account capacity exhausted','account_daily_limit':'Account daily capture limit','url_daily_limit':'Individual URL daily limit','target_host_limit':'Target host rate limit','target_redirects':'Target redirect limit','unknown_limit':'Unclassified provider limit','http_throttled':'Provider HTTP throttle','http_unavailable':'Provider HTTP unavailable','http_auth':'Authentication rejected','capacity_unknown':'Account capacity check unavailable','capacity_available':'Capacity checked'}
+    event=next((label for key,label in events.items() if v('event_'+key)==1),'Exact event not yet recorded')
+    return f'''<section class="history" id="archive-reliability"><h2>Archive provider reliability</h2><p>Latest classified event: <strong>{_e(event)}</strong> · Capacity sampled: {_e(_time(v('capacity_checked_at')))}. Values are the last observed account status, not a live guarantee.</p>
+    <div class="tiles">{_card('Available capture sessions',count('capacity_available'),'Processing: '+count('capacity_processing'))}{_card('Daily captures',count('capacity_daily_captures'),'Limit: '+count('capacity_daily_captures_limit'))}{_card('Daily status requests',count('capacity_daily_status'),'Limit: '+count('capacity_daily_status_limit'))}{_card('Provider failures',count('provider_failure_count'),'Consecutive global cooldown events')}{_card('Scoped holds',count('source_limits_active'),'URL/host-specific deferrals')}</div>
+    <h2>Stale acknowledged jobs</h2><p>Previously submitted jobs retained for reconciliation; they are not blindly resubmitted.</p><div class="tiles">{_card('Tracked stale jobs',count('stale_total'),'Waiting: '+count('stale_waiting'))}{_card('Verified',count('stale_verified'),'MANPC accepted: '+count('stale_manpc'))}{_card('In progress',count('stale_in_progress'),'Previously acknowledged capture or queued retry')}{_card('Needs review',count('stale_review'),'Unresolved or conflicting receipt')}</div></section>'''
 
 
 def _service_table(rows: list[tuple[str, str, str, str]]) -> str:
@@ -352,7 +364,7 @@ def render_dashboard(snapshot: Mapping[str, Any], *, preview: bool = False) -> s
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>SWCCG Operations</title><style>{CSS}</style></head>
 <body><main><div class="masthead"><div><p class="eyebrow">SWCCG.COM &nbsp; / &nbsp; PRIVATE OPERATIONS</p><h1>Operations overview</h1><p class="subtitle">One view of service checks, preservation progress, backups and launch measurement.</p></div><div class="stamp"><span>SNAPSHOT GENERATED</span><strong>{_e(sample)}</strong><small>Historical data shown as collected</small></div></div>{preview_badge}
 <nav aria-label="Dashboard sections">{nav}</nav><div class="tiles">{''.join(cards)}</div>
-{_preservation(sources)}{_recovery_panel(sources)}{_manpc_panel(sources, snapshot.get("generated_at"))}<section class="history"><h2>Historical comparisons</h2><p>Other 24-hour, 7-day and 30-day trends require comparable historical buckets and source coverage. Missing samples are never zero.</p></section>
+{_preservation(sources)}{_reliability_panel(sources)}{_recovery_panel(sources)}{_manpc_panel(sources, snapshot.get("generated_at"))}<section class="history"><h2>Historical comparisons</h2><p>Other 24-hour, 7-day and 30-day trends require comparable historical buckets and source coverage. Missing samples are never zero.</p></section>
 {sections}<footer>Private aggregate dashboard · All timestamps in Caracas (UTC−04:00). Source checks do not prove an operational outcome. This view is read-only; it does not submit archive jobs, restart services or run AI.</footer></main></body></html>'''
 
 
