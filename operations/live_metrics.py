@@ -6,10 +6,10 @@ import re
 from .contracts import AdapterResult,Metric
 from .health import read_receipt
 
-SECURITY_KEYS=('community_active','community_dropped_packets','community_dropped_bytes','local_active','local_dropped_packets','local_dropped_bytes','processed_packets')
+SECURITY_KEYS=('community_active','community_dropped_packets','community_dropped_bytes','local_active','local_dropped_packets','local_dropped_bytes','processed_packets','interval_seconds','daily_community_dropped_packets','daily_local_dropped_packets','daily_processed_packets','daily_coverage_seconds')
 PLAYER_KEYS=('games','partial_ids','participants','local_accounts')
 AUDIENCE_KEYS=('page_requests','likely_browser_requests','known_automation_requests','unknown_requests','browser_address_groups','parsed_lines','invalid_lines','coverage_seconds')
-SECURITY_SPECS=tuple((f'security.{k}','bytes' if k.endswith('_bytes') else 'count','all') for k in SECURITY_KEYS)+(('security.source_checked_at','epoch_seconds','all'),)
+SECURITY_SPECS=tuple((f'security.{k}','bytes' if k.endswith('_bytes') else 'seconds' if k.endswith('_seconds') else 'count','all') for k in SECURITY_KEYS)+(('security.source_checked_at','epoch_seconds','all'),)
 PLAYER_SPECS=tuple((f'player.{k}','count',f'rolling_{d}d') for d in (1,7,30) for k in PLAYER_KEYS)+(('player.source_checked_at','epoch_seconds','all'),)
 AUDIENCE_SPECS=tuple((f'audience.forum_{k}','seconds' if k=='coverage_seconds' else 'count','all') for k in AUDIENCE_KEYS)
 
@@ -39,7 +39,7 @@ def project_network(path,source,now):
             elif source=='security':val=count(row['metrics'].get(key))
             else:val=count(row['windows'][dim.removeprefix('rolling_').removesuffix('d')].get(key))
             result.append(Metric(mid,val,unit,dim))
-        partial=any(x.value is None for x in result); old=now-observed>(900 if source=='security' else 3600)
+        partial=any(x.value is None for x in result) or (source=='security' and row['metrics'].get('daily_coverage_seconds',0)<86400); old=now-observed>(1800 if source=='security' else 3600)
         return AdapterResult(source,now,tuple(result),status='degraded' if partial or old else 'ok',detail='source_old' if old else 'partial_receipt' if partial else None)
     except (OSError,ValueError,TypeError,KeyError):return unavailable(source,now,'invalid_receipt')
 

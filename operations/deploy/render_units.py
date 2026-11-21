@@ -148,7 +148,7 @@ WantedBy=timers.target
 """
     bundle={"swccg-operations-export.service": exporter, "swccg-operations-collector.service": collector,"swccg-operations-collector.timer": timer}
     if network:
-        network_hardening=HARDENING.replace('PrivateNetwork=yes','PrivateNetwork=no').replace('RestrictAddressFamilies=AF_UNIX','RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nIPAddressDeny=any\nIPAddressAllow=localhost').replace('MemoryMax=100M','MemoryMax=128M').replace('CPUQuota=100%','CPUQuota=50%')
+        network_hardening=HARDENING.replace('MemoryMax=100M','MemoryMax=128M').replace('CPUQuota=100%','CPUQuota=50%')
         bundle['swccg-operations-network.service']=f'''[Unit]
 Description=SWCCG bounded aggregate network sources
 After=docker.service crowdsec.service
