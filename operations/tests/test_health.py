@@ -45,6 +45,30 @@ def backup_fixture(**overrides):
     return data
 
 
+class ArchiveCensusTests(unittest.TestCase):
+    def test_window_failure_and_manpc_counts_and_mismatch(self):
+        ledger = {
+            "private_url_1": {"status": "verified", "verify": {"at": EARLIER, "lane": "manpc"}},
+            "private_url_2": {"status": "failed", "last": "2023-11-01T00:00:00Z", "error": "connection refused"},
+            "private_url_3": {"status": "failed", "error": "401"},
+            "private_url_4": {"status": "unverified", "capture": "private", "verify": {"defer": "manpc"}},
+        }
+        fixture = archive_fixture(ledger_status_counts={"verified": 1, "failed": 2, "unverified": 1}, reason="provider unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "ledger.json"
+            p.write_text(json.dumps(ledger))
+            result = parse_archive_health(fixture, NOW, 600, p)
+            for name, count in {"verified_24h": 1, "verified_7d": 1, "failed_transient": 1, "failed_due": 1, "failed_other": 1, "verified_manpc": 1, "manpc_candidates": 1, "manpc_deferred": 1, "reason_provider_unavailable": 1}.items():
+                self.assertEqual(value(result, "archive." + name), count, name)
+            self.assertNotIn("private_url", str(result))
+            fixture["ledger_status_counts"]["failed"] = 3
+            self.assertIsNone(value(parse_archive_health(fixture, NOW, 600, p), "archive.verified_24h"))
+            fixture["ledger_status_counts"]["failed"] = 2
+            ledger["private_url_1"]["verify"].pop("at")
+            p.write_text(json.dumps(ledger))
+            self.assertIsNone(value(parse_archive_health(fixture, NOW, 600, p), "archive.verified_7d"))
+
+
 class ArchiveHealthTest(unittest.TestCase):
     def test_process_failed_with_healthy_provider_and_verified_progress(self):
         data = archive_fixture(outcome="failed", reason="untrusted diagnostic with private marker")
