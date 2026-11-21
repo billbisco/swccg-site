@@ -1,5 +1,5 @@
 """Validated aggregate projections. Never persist raw log identifiers."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import ipaddress
 from pathlib import Path
 import re
@@ -9,9 +9,13 @@ from .health import read_receipt
 SECURITY_KEYS=('community_active','community_dropped_packets','community_dropped_bytes','local_active','local_dropped_packets','local_dropped_bytes','processed_packets','interval_seconds','daily_community_dropped_packets','daily_local_dropped_packets','daily_processed_packets','daily_coverage_seconds')
 PLAYER_KEYS=('games','partial_ids','participants','local_accounts')
 AUDIENCE_KEYS=('page_requests','likely_browser_requests','known_automation_requests','unknown_requests','browser_address_groups','parsed_lines','invalid_lines','coverage_seconds')
+SITE_SCOPES=('production','site','wiki','play','forum')
+SITE_FIELDS=('browser','automation','unknown','browser_groups')
 SECURITY_SPECS=tuple((f'security.{k}','bytes' if k.endswith('_bytes') else 'seconds' if k.endswith('_seconds') else 'count','all') for k in SECURITY_KEYS)+(('security.source_checked_at','epoch_seconds','all'),)
 PLAYER_SPECS=tuple((f'player.{k}','count',f'rolling_{d}d') for d in (1,7,30) for k in PLAYER_KEYS)+(('player.source_checked_at','epoch_seconds','all'),)
-AUDIENCE_SPECS=tuple((f'audience.forum_{k}','seconds' if k=='coverage_seconds' else 'count','all') for k in AUDIENCE_KEYS)
+FORUM_SPECS=tuple((f'audience.forum_{k}','seconds' if k=='coverage_seconds' else 'count','all') for k in AUDIENCE_KEYS)
+SITE_SPECS=tuple((f'audience.{d}_{k}','count',scope) for d in ('today','yesterday') for scope in SITE_SCOPES for k in SITE_FIELDS)+tuple((f'audience.{d}_coverage','seconds','all') for d in ('today','yesterday'))+(('audience.site_checked_at','epoch_seconds','all'),)
+AUDIENCE_SPECS=FORUM_SPECS+SITE_SPECS
 
 
 def unavailable(source,now,detail='missing_receipt'):
@@ -81,5 +85,30 @@ def forum_projection(current,previous,now):
         counts.update(browser_address_groups=len(groups),parsed_lines=parsed,invalid_lines=invalid,coverage_seconds=min(86400,max(0,now-first)) if first is not None else 0)
         # Missing coverage is explicitly incomplete, not a confident zero for the day.
         partial=first is None or first>start or invalid>0
-        return AdapterResult('audience',now,tuple(Metric(mid,counts[mid.removeprefix('audience.forum_')],unit,dim) for mid,unit,dim in AUDIENCE_SPECS),status='degraded' if partial else 'ok',detail='partial_receipt' if partial else None)
+        return AdapterResult('audience',now,tuple(Metric(mid,counts[mid.removeprefix('audience.forum_')],unit,dim) for mid,unit,dim in FORUM_SPECS),status='degraded' if partial else 'ok',detail='partial_receipt' if partial else None)
     except (OSError,ValueError):return unavailable('audience',now,'missing_receipt')
+
+
+def site_projection(forum,site_path,now):
+    d={};observed=None
+    if site_path is not None:
+        try:
+            candidate=read_receipt(site_path);t=count(candidate.get('observed_at'))
+            if candidate.get('schema')==1 and t is not None and 0<=now-t<=300: d=candidate;observed=t
+        except (OSError,ValueError,TypeError):pass
+    forum_values={m.metric_id:m.value for m in forum.samples}
+    samples=[Metric(mid,forum_values.get(mid),unit,dim) for mid,unit,dim in FORUM_SPECS]
+    for mid,unit,dim in SITE_SPECS:
+        key=mid.removeprefix('audience.');val=None
+        if key=='site_checked_at':val=observed
+        else:
+            period,field=key.split('_',1);r=d.get(period)
+            if isinstance(r,dict):
+                expected=(datetime.fromtimestamp(now,timezone.utc).date()-timedelta(days=period=='yesterday')).isoformat()
+                if r.get('day')==expected:
+                    if field=='coverage':val=count(r.get('coverage_seconds'));val=val if val is not None and val<=86400 else None
+                    else:
+                        scopes=r.get('scopes');row=scopes.get(dim) if isinstance(scopes,dict) else None
+                        val=count(row.get(field)) if isinstance(row,dict) else None
+        samples.append(Metric(mid,val,unit,dim))
+    return AdapterResult('audience',now,tuple(samples),status='ok' if observed and forum.status=='ok' else 'degraded',detail=None if observed and forum.status=='ok' else 'partial_receipt')
