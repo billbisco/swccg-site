@@ -101,6 +101,11 @@ METRIC_LABELS = {
     "security.local_dropped_bytes":"Bytes dropped — local engine",
     "security.processed_packets":"Packets processed by bouncer",
     "security.source_checked_at":"Security aggregate checked at",
+    "security.interval_seconds":"Most recent bouncer reporting interval",
+    "security.daily_community_dropped_packets":"Community-list packets dropped (recorded 24h intervals)",
+    "security.daily_local_dropped_packets":"Local-engine packets dropped (recorded 24h intervals)",
+    "security.daily_processed_packets":"Packets processed (recorded 24h intervals)",
+    "security.daily_coverage_seconds":"Coverage of reported daily intervals",
 }
 STATUS_LABELS = {
     "ok": ("Observed", "good"),
@@ -330,7 +335,7 @@ def _source_section(source_id: str, source: Mapping[str, Any] | None) -> str:
     data = _service_table(rows) if source_id == "service" else ''
     if not data:
         data = ('<div class="table-scroll"><table><thead><tr><th scope="col">Metric</th><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Observed at</th></tr></thead><tbody>' + table + '</tbody></table></div>') if table else '<p class="empty">No supported aggregate values in this sample. Coverage is missing.</p>'
-    notes={"audience":"Pilot: production forum log only. Address groups are a rough estimate, not people; shared mixed production/test logs are excluded. No raw addresses or user agents are retained.","player":"Play-only recorded game results and distinct IDs in recorded outcomes; missing IDs limit coverage. Local player rows are not deduplicated sign-in registrations. Live sessions and instrumented funnel events are not yet measured.","security":"Source-owned firewall counters: cumulative since bouncer accounting reset. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
+    notes={"audience":"Pilot: production forum log only. Address groups are a rough estimate, not people; shared mixed production/test logs are excluded. No raw addresses or user agents are retained.","player":"Play-only recorded game results and distinct IDs in recorded outcomes; missing IDs limit coverage. Local player rows are not deduplicated sign-in registrations. Live sessions and instrumented funnel events are not yet measured.","security":"Source-owned latest bouncer interval and non-overlapping reported daily intervals. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
     if source_id in notes:data=f'<p class="service-note">{_e(notes[source_id])}</p>'+data
     return f'''<section id="{source_id}" class="panel"><header><div><h2>{_e(name)}</h2><p>{_e(description)}</p></div><span class="badge {style}">{_e(label)}</span></header>
       <dl class="freshness"><div><dt>Source observed</dt><dd>{_e(_time(source.get('observed_at')))}</dd></div><div><dt>Last successful source read</dt><dd>{_e(_time(source.get('last_success_at')))}</dd></div></dl>

@@ -6,6 +6,7 @@ import subprocess
 import time
 import os
 import tempfile
+import sqlite3
 
 
 def command(args, timeout, stdin=None):
@@ -14,15 +15,45 @@ def command(args, timeout, stdin=None):
     return json.loads(r.stdout)
 
 
-def security():
-    d=command(['cscli','metrics','show','bouncers','-o','json'],10)
-    rows=d['bouncers']; v=rows['cs-firewall-bouncer-gemp']
-    result={}
-    for group,name in (('CAPI','community'),('crowdsec','local')):
-        r=v[group]; result[name+'_active']=r['active_decisions']['ip']; result[name+'_dropped_packets']=r['dropped']['packet'];result[name+'_dropped_bytes']=r['dropped']['byte']
-    result['processed_packets']=v['']['processed']['packet']
-    if any(type(n) is not int or n<0 for n in result.values()):raise ValueError('invalid security aggregate')
-    return {'observed_at':int(time.time()),'metrics':result}
+def bouncer_interval(payload):
+    d=json.loads(payload); rows=d['metrics']
+    if len(rows)!=1:raise ValueError('unexpected interval shape')
+    row=rows[0]; end=row['meta']['utc_now_timestamp']; seconds=row['meta']['window_size_seconds']
+    if type(end) is not int or type(seconds) is not int or not 0<seconds<=1800:raise ValueError('invalid interval')
+    sums={};seen=set()
+    for item in row['items']:
+        labels=item['labels']; origin=labels.get('origin'); iptype=labels.get('ip_type'); name=item['name'];unit=item['unit'];v=item['value']
+        if iptype not in ('ipv4','ipv6') or type(v) is not int or v<0:raise ValueError('invalid aggregate row')
+        mapping={'CAPI':'community','crowdsec':'local'}
+        if origin in mapping and (name,unit) in (('active_decisions','ip'),('dropped','packet'),('dropped','byte')):
+            key=mapping[origin]+{'ip':'_active','packet':'_dropped_packets','byte':'_dropped_bytes'}[unit]
+        elif origin is None and (name,unit)==('processed','packet'):key='processed_packets'
+        else:continue
+        if (key,iptype) in seen:raise ValueError('duplicate aggregate row')
+        seen.add((key,iptype));sums[key]=sums.get(key,0)+v
+    if not sums:raise ValueError('no known counters')
+    return end,seconds,sums
+
+
+def security(db='/var/lib/crowdsec/data/crowdsec.db'):
+    # CrowdSec's already-persisted remediation component intervals, not raw decisions.
+    with sqlite3.connect('file:'+str(db)+'?mode=ro',uri=True,timeout=3) as conn:
+        conn.execute('PRAGMA query_only=ON')
+        raw=[r[0] for r in conn.execute("SELECT payload FROM metrics WHERE generated_type='RC' AND generated_by='cs-firewall-bouncer-gemp' ORDER BY id DESC LIMIT 100")]
+    if not raw:raise ValueError('no aggregate receipts')
+    rows=[bouncer_interval(x) for x in raw if len(x)<65536]
+    if not rows:raise ValueError('no valid aggregate receipts')
+    end,seconds,latest=rows[0]; now=int(time.time())
+    if not 0<=now-end<=3600:raise ValueError('stale interval')
+    result=dict(latest);result['interval_seconds']=seconds
+    total={key:0 for key in ('community_dropped_packets','local_dropped_packets','processed_packets')}; coverage=0; boundary=end
+    for e,s,metrics in rows:
+        if e>boundary or e-s<end-86400:continue
+        if any(key not in metrics for key in total):continue
+        for key in total:total[key]+=metrics[key]
+        coverage+=s;boundary=e-s
+    result.update({'daily_'+k:v for k,v in total.items()});result['daily_coverage_seconds']=coverage
+    return {'observed_at':end,'metrics':result}
 
 
 def player(source):
@@ -36,7 +67,7 @@ def main():
     except (OSError,ValueError):old={}
     now=int(time.time()); result={'schema':1,'security':None,'player':None}
     try:result['security']=security()
-    except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):pass
+    except (OSError,ValueError,KeyError,TypeError,sqlite3.Error,subprocess.SubprocessError):pass
     oldplayer=old.get('player')
     if isinstance(oldplayer,dict) and type(oldplayer.get('observed_at')) is int and 0<=now-oldplayer['observed_at']<1800:result['player']=oldplayer
     else:

@@ -4,11 +4,16 @@ import tempfile
 import unittest
 from datetime import datetime,timezone
 from operations.live_metrics import forum_projection, project_network
+from operations.deploy.network_metrics import bouncer_interval
 
 NOW=int(datetime(2026,1,2,12,tzinfo=timezone.utc).timestamp())
 
 
 class LiveMetricsTests(unittest.TestCase):
+    def test_bouncer_counts_distinct_origins_without_identity(self):
+        items=[{'name':'dropped','unit':'packet','labels':{'origin':'crowdsec','ip_type':ip},'value':n} for ip,n in [('ipv4',5),('ipv6',2)]]
+        raw=json.dumps({'metrics':[{'meta':{'utc_now_timestamp':NOW,'window_size_seconds':900},'items':items}]})
+        end,seconds,counts=bouncer_interval(raw);self.assertEqual((NOW,900,7),(end,seconds,counts['local_dropped_packets']))
     def test_forum_groups_are_ephemeral_and_bots_separate(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp); previous=p/'old'; current=p/'current'
