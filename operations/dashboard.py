@@ -88,6 +88,17 @@ METRIC_LABELS = {
     "audience.forum_parsed_lines":"Parsed forum log lines (24h)",
     "audience.forum_invalid_lines":"Unparsed lines in scanned files",
     "audience.forum_coverage_seconds":"Recorded log coverage duration",
+    "audience.today_browser_groups":"Estimated distinct likely-browser address groups today (UTC)",
+    "audience.yesterday_browser_groups":"Estimated distinct likely-browser address groups yesterday (UTC)",
+    "audience.today_browser":"Likely-browser HTML requests today (UTC)",
+    "audience.yesterday_browser":"Likely-browser HTML requests yesterday (UTC)",
+    "audience.today_automation":"Automation-indicating HTML requests today (UTC)",
+    "audience.yesterday_automation":"Automation-indicating HTML requests yesterday (UTC)",
+    "audience.today_unknown":"Unclassified HTML requests today (UTC)",
+    "audience.yesterday_unknown":"Unclassified HTML requests yesterday (UTC)",
+    "audience.today_coverage":"Receiver uptime coverage today",
+    "audience.yesterday_coverage":"Receiver uptime coverage yesterday",
+    "audience.site_checked_at":"Production audience receipt checked at",
     "player.games":"Recorded game results",
     "player.partial_ids":"Results with missing participant IDs",
     "player.participants":"Distinct recorded participant IDs",
@@ -200,6 +211,7 @@ def _valid_dimension(source_id: str, dimension: Any) -> str | None:
     if source_id == "service":
         return SERVICE_DIMENSIONS.get(dimension)
     if source_id == "player":return {"rolling_1d":"24 hours","rolling_7d":"7 days","rolling_30d":"30 days"}.get(dimension)
+    if source_id=='audience':return {'production':'Combined measured production','site':'Main site','wiki':'Wiki','play':'Play','forum':'Forum'}.get(dimension)
     return None
 
 
@@ -331,12 +343,25 @@ def _source_section(source_id: str, source: Mapping[str, Any] | None) -> str:
         return f'<section id="{source_id}" class="panel"><header><div><h2>{_e(name)}</h2><p>{_e(description)}</p></div><span class="badge neutral">Unavailable</span></header><p class="empty">No aggregate has been collected for this source yet. Missing data is not zero.</p></section>'
     label, style = _state(source)
     rows = _metrics(source_id, source)
+    audience_table=''
+    if source_id=='audience':
+        # Keep the new sitewide coverage compact instead of a 40-row repeated table.
+        scopes=('production','site','wiki','play','forum'); keys=('browser_groups','browser','automation','unknown')
+        names=('Estimated browser groups','Likely-browser requests','Automation-indicating','Unknown')
+        def val(period,key,scope):
+            for r in source.get('metrics',[]):
+                if r.get('metric_id')==f'audience.{period}_{key}' and r.get('dimension')==scope:return _value(r.get('value'),'count')
+            return 'Unavailable'
+        header=''.join(f'<th scope="col">{_e(n)} today</th><th scope="col">{_e(n)} yesterday</th>' for n in names)
+        body=''.join('<tr><th scope="row">'+_e(_valid_dimension('audience',s))+'</th>'+''.join('<td>'+_e(val(p,k,s))+'</td>' for k in keys for p in ('today','yesterday'))+'</tr>' for s in scopes)
+        audience_table='<div class="table-scroll"><table><thead><tr><th scope="col">Measured service</th>'+header+'</tr></thead><tbody>'+body+'</tbody></table></div>'
+        rows=[r for r in rows if not r[1]]
     table = ''.join(f'<tr><th scope="row">{_e(metric)}</th><td>{_e(dimension or "—")}</td><td class="metric-value">{_e(value)}</td><td class="sample-time">{_e(when)}</td></tr>' for metric, dimension, value, when in rows)
     data = _service_table(rows) if source_id == "service" else ''
     if not data:
         data = ('<div class="table-scroll"><table><thead><tr><th scope="col">Metric</th><th scope="col">Scope</th><th scope="col">Value</th><th scope="col">Observed at</th></tr></thead><tbody>' + table + '</tbody></table></div>') if table else '<p class="empty">No supported aggregate values in this sample. Coverage is missing.</p>'
-    notes={"audience":"Pilot: production forum log only. Address groups are a rough estimate, not people; shared mixed production/test logs are excluded. No raw addresses or user agents are retained.","player":"Play-only recorded game results and distinct IDs in recorded outcomes; missing IDs limit coverage. Local player rows are not deduplicated sign-in registrations. Live sessions and instrumented funnel events are not yet measured.","security":"Source-owned latest bouncer interval and non-overlapping reported daily intervals. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
-    if source_id in notes:data=f'<p class="service-note">{_e(notes[source_id])}</p>'+data
+    notes={"audience":"Production HTML navigation stream covers the measured main site, Wiki, Play and Forum routes only. Combined unique address-group estimates deduplicate across those routes for each UTC day, not across days. They are approximate address groups, not unique people, and uptime coverage does not prove complete delivery. Raw addresses enter only a local datagram and are discarded immediately; no new raw log, tracking cookie or fingerprint. Forum's separate log-based 24h figures are not added to the combined estimate.","player":"Play-only recorded game results and distinct IDs in recorded outcomes; missing IDs limit coverage. Local player rows are not deduplicated sign-in registrations. Live sessions and instrumented funnel events are not yet measured.","security":"Source-owned latest bouncer interval and non-overlapping reported daily intervals. Packets, bytes and active decisions are distinct units, not unique attackers or HTTP requests. No enforcement settings changed."}
+    if source_id in notes:data=f'<p class="service-note">{_e(notes[source_id])}</p>'+audience_table+data
     return f'''<section id="{source_id}" class="panel"><header><div><h2>{_e(name)}</h2><p>{_e(description)}</p></div><span class="badge {style}">{_e(label)}</span></header>
       <dl class="freshness"><div><dt>Source observed</dt><dd>{_e(_time(source.get('observed_at')))}</dd></div><div><dt>Last successful source read</dt><dd>{_e(_time(source.get('last_success_at')))}</dd></div></dl>
       {data}</section>'''
