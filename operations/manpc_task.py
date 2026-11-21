@@ -38,10 +38,11 @@ if h.get('mode') != 'healthy' or h.get('outcome') == 'paused':
  print(json.dumps({'allowed':False,'rows':[]})); sys.exit(0)
 d=json.load(open(w.DONE)); rows=[r for r in w.verify_candidates(d,limit=len(d)) if r.get('capture')]
 recovery=w.recovery.manual_candidates(w,Path('/root/.local/state/swccg-wayback'),d) if hasattr(w,'recovery') else []
+stale=w.reliability.manual_stale_candidates(w,Path('/root/.local/state/swccg-wayback'),d) if hasattr(w,'reliability') else []
 slot=int(time.time())//1800
 def take(values,n):
  i=(slot*n)%max(1,len(values)); return (values[i:]+values[:i])[:n]
-chosen=take(recovery,1); chosen_urls={r['url'] for r in chosen}
+chosen=take(recovery,1); chosen_urls={r['url'] for r in chosen}; chosen+=take([r for r in stale if r['url'] not in chosen_urls],1); chosen_urls={r['url'] for r in chosen}
 rows=[r for r in rows if r['url'] not in chosen_urls]
 print(json.dumps({'allowed':True,'rows':chosen+take(rows,3-len(chosen))}))'''
 WRITE = '''import json,os,sys,tempfile

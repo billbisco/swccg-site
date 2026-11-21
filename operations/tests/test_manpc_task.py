@@ -14,6 +14,9 @@ class VerifyRetry(Exception):
 
 
 class ManpcTaskTests(unittest.TestCase):
+    def test_remote_selection_program_is_valid_python(self):
+        compile(READ,'<remote-selection>','exec')
+        compile(WRITE,'<remote-receipt>','exec')
     def test_waits_on_owner_hold_without_fetch(self):
         with tempfile.TemporaryDirectory() as tmp:
             calls=[]
