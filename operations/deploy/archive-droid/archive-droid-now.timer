@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the Archive Droid staff page (Now, Queue, approvals) every five minutes
+
+[Timer]
+OnCalendar=*:02/5
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

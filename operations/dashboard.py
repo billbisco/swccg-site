@@ -427,6 +427,8 @@ def render_dashboard(snapshot: Mapping[str, Any], *, preview: bool = False) -> s
         return _card(title, rendered, f"{label} · {hint}", style)
     cards += [tile(archive, "archive", "Verified archive captures", "Ledger status; not a distinct-version count"), tile(run, "archive", "Archive latest run succeeded", "Separate from provider health and capture progress"), tile(provider, "archive", "Archive provider healthy", "Separate from worker exit status"), tile(backup, "backup", "Last verified backup", "Restoration evidence is separate")]
     nav = ''.join(f'<a href="#{source_id}">{_e(SOURCES[source_id][0])}</a>' for source_id in SOURCES)
+    # Item lists live only on the separate staff page; this overview stays aggregate-only (#1360).
+    nav += '<a href="/admin/operations/archive-droid/">Archive Droid items \u2192</a>'
     sections = ''.join(_source_section(source_id, sources.get(source_id)) for source_id in SOURCES)
     sample = _time(snapshot.get("generated_at"))
     preview_badge = '<aside class="preview">MOCK PREVIEW · Synthetic demonstration data. No live site or administrative access supplied.</aside>' if preview else ''
