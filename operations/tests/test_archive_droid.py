@@ -198,6 +198,12 @@ class RenderTests(unittest.TestCase):
         html = render.page("t", "<p>" + render.safe_link(private) + render.safe_link(public) + "</p>")
         self.assertNotIn("billbisco", html)
         self.assertNotIn("ai-team-skills", html)
+        snapshot = "https://swccg.com/snapshots/github/owner/billbisco/repo/file.html"
+        wayback_snap = "https://web.archive.org/web/20260101000000/" + snapshot
+        self.assertEqual(render.safe_link(snapshot), '<span class="muted">private source</span>')
+        self.assertEqual(render.safe_link(wayback_snap, "Wayback"), '<span class="muted">private source</span>')
+        self.assertNotIn("billbisco", render.safe_link(snapshot))
+        self.assertNotIn("billbisco", render.safe_link(wayback_snap, "Wayback"))
 
 
 if __name__ == "__main__":
