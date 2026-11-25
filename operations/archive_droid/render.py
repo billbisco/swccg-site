@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import re
 import json
 import os
 import tempfile
@@ -34,6 +35,23 @@ nav a{margin-right:14px}.scroll{max-height:520px;overflow:auto}code{font-size:.8
 
 def e(x) -> str:
     return html.escape("" if x is None else str(x))
+
+# Hosted on a personal or private GitHub account — never write the URL into the page.
+_PRIVATE_REPO = re.compile(
+    r"(?i)(?:^|://)(?:www\.)?(?:github\.com|raw\.githubusercontent\.com)/billbisco(?:/|$)"
+)
+
+
+def safe_link(url, label=None) -> str:
+    """Link to a public URL, or a label with no href if the URL names a private repo."""
+    if not url:
+        return e(label or "")
+    if _PRIVATE_REPO.search(str(url)):
+        return '<span class="muted">private source</span>'
+    text = label if label is not None else url
+    return f'<a href="{e(url)}">{e(text)}</a>'
+
+
 
 
 def when(value) -> str:
@@ -130,7 +148,7 @@ def write_now(view: Path, d: dict) -> None:
         ("Approved object IDs", f'{d.get("approved_ids", 0):,}'),
     ]
     tile_html = "".join(f'<div class="tile"><span>{e(k)}</span><b>{v}</b></div>' for k, v in tiles)
-    cur_html = (f'<p><b>{e(cur.get("event"))}</b> <a href="{e(cur.get("url"))}">{e(cur.get("url"))}</a> at {when(cur.get("at"))}</p>'
+    cur_html = (f'<p><b>{e(cur.get("event"))}</b> {safe_link(cur.get("url"))} at {when(cur.get("at"))}</p>'
                 if cur else '<p class="muted">No recent item in the worker journal.</p>')
     warn_html = ("".join(f'<li class="warn">{e(w)}</li>' for w in warn) if warn else '<li class="okc">No threshold breached.</li>')
     stage_rows = "".join(f'<tr><td>{e(s)}</td><td>{stages.get(s, 0):,}</td><td class="muted">{e(desc)}</td></tr>'
@@ -138,7 +156,7 @@ def write_now(view: Path, d: dict) -> None:
     # Queue
     q = d.get("queue") or []
     qrows = "".join(
-        f'<tr class="{"cur" if r.get("current") else ""}"><td>{r["pos"]:,}</td><td><a href="{e(r["url"])}">{e(r["url"])}</a></td>'
+        f'<tr class="{"cur" if r.get("current") else ""}"><td>{r["pos"]:,}</td><td>{safe_link(r["url"])}</td>'
         f'<td>{tlink(r.get("ticket"))}</td><td>{e(r.get("stage"))}</td></tr>' for r in q[:1000])
     more = f'<p class="muted">Showing the first 1,000 of {len(q):,} rows.</p>' if len(q) > 1000 else ""
     # Approvals
@@ -180,6 +198,9 @@ def _thumb(it) -> str:
     title = it.get("title")
     link = it.get("desc") or (f"{WIKI}/wiki/File:{quote(title)}" if title else it.get("url"))
     if title and (it.get("mime") or "").startswith("image/"):
+        # Never point a thumb at a private repo, even if the title looks like a File: name.
+        if link and _PRIVATE_REPO.search(str(link)):
+            return ""
         src = f"{WIKI}/wiki/Special:FilePath/{quote(title)}?width=140"
         return (f'<div class="thumb"><a href="{e(link)}"><img loading="lazy" src="{e(src)}" alt=""></a>'
                 f'<a href="{e(link)}">{e(title)}</a><br><span class="muted">{e(it.get("stage"))}</span></div>')
@@ -197,7 +218,7 @@ def write_missing(view: Path, groups: dict, summary: dict) -> None:
             chunk = items[(n - 1) * PAGE_SIZE:n * PAGE_SIZE]
             thumbs = "".join(_thumb(it) for it in chunk)
             texts = "".join(
-                f'<li><a href="{e(it.get("desc") or it.get("url"))}">{e(it.get("title") or it.get("url"))}</a> '
+                f'<li>{safe_link(it.get("desc") or it.get("url"), it.get("title") or it.get("url"))} '
                 f'<span class="muted">{e(it.get("stage"))}</span></li>'
                 for it in chunk if not _thumb(it))
             nav = " ".join(f'<a href="{e(g)}-{i}.html">{i}</a>' if i != n else f"<b>{i}</b>" for i in range(1, pages + 1))
