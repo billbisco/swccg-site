@@ -21,15 +21,15 @@ BASE = "/admin/operations/archive-droid/"
 HOW_QUEUE = """
 <div class="how" id="how-queue">
 <h3>How this queue works (for every AI)</h3>
-<p>This queue is the worker's ordered list of URLs waiting to be saved and verified on the Wayback Machine. Every AI adds new work the same way: register it with the sanctioned helper and a ticket number. Do not edit the queue by hand.</p>
+<p>This queue is the worker's ordered list of URLs waiting to be saved and verified on the Wayback Machine. Every AI adds new work the same way: register it with the sanctioned helper and a ticket number. The worker then auto-approves it and appends it to the back of the queue. Do not edit the queue by hand.</p>
 <p><b>To add an item</b> from the swccg-wiki repo:</p>
 <code class="cmd">python3 tools/preservation_enqueue.py REQUEST.json --registry /root/.local/state/swccg-wayback/registry</code>
 <p>The request must be <code>schema_version</code> 1 and include subject, source (<code>url</code>, <code>sha256</code>, <code>bytes</code>, and <code>checked_evidence</code>), readiness, owner, continuation, <code>approval_scope</code> with the work <b>ticket number</b>, and <code>backup_receipt</code> (plus <code>source_backup_receipt</code> when the source and the page are different). Do not put credentials in the request. Field rules are in <code>ops/PRESERVATION-REGISTRATION.md</code> and in the swccg-wiki skill's <code>archiving.md</code>.</p>
 <p><b>What that command actually does.</b> It sends metadata to the server registration inbox only. It does not submit a capture, and it does not itself append a line to <code>queue.txt</code>. The receipt always says <code>submitted: false</code>. Unready items (missing backup, missing source proof, or an unready stage) stay in the registry and do not enter this queue.</p>
-<p><b>Approval and the back of the queue.</b> A registration is not an approval. An object is promoted only after an operator review records its exact object ID in <code>approved-objects.json</code>. AIs do not write that file. Once an object is approved and ready, each worker run tries at most two such jobs and, when they pass the public-byte checks, <b>appends their URLs to the back of queue.txt</b>. Existing lines are not reordered. After your story's items are registered, that story's archiving step is done; Archive Droid and standing ticket <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a> own approval, promotion, saving, verification and linking.</p>
+<p><b>Approval and the back of the queue.</b> Approval is automatic (Bill, 25 Nov 2026). The worker auto-approves every registration that is ready (backup receipt and source proof in place) and carries a work ticket number, within about an hour. It records each approval with its date and ticket in <a href="#approved">Recently approved</a>. Ready items without a ticket stay unapproved and are flagged on this page. Items under the 14 Nov 2026 hold, or not yet ready, are not approved; <a href="https://github.com/swccg-guild/work/issues/1358">#1358</a> decides the held groups. AIs do not hand-write approvals or edit <code>approved-objects.json</code>. Each worker run promotes at most two approved jobs and, when they pass the public-byte checks, <b>appends their URLs to the back of queue.txt</b>. Existing lines are not reordered. After your story's items are registered with a ticket, that story's archiving step is done; Archive Droid and standing ticket <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a> own approval, promotion, saving, verification and linking.</p>
 <p><b>Save, verify, and Preservation links.</b> The worker then submits queued URLs to archive.org one at a time, confirms each job, and records the result in <code>done.json</code>. After a capture is <code>verified</code>, the linker adds a Preservation link on the matching wiki File page, or a Preserved copy on a citing page for snapshots.</p>
 <p><b>How to read Stage in this table:</b> <i>new</i> — in the queue, not yet tried; <i>submitted</i> — sent to archive.org, waiting; <i>ok</i> — a capture exists, verification still pending; <i>unverified</i> — a capture loaded but is not yet accepted as a match. Failed and retry items are in <a href="#problems">Problems</a>. Verified items are in <a href="#completed">Completed / Verified</a>.</p>
-<p><b>Do not:</b> edit <code>queue.txt</code> or <code>done.json</code> by hand; reorder the queue; make a direct archive.org save (including <code>web.archive.org/save</code>) outside this pipeline; register or queue work without a ticket number.</p>
+<p><b>Do not:</b> edit <code>queue.txt</code> or <code>done.json</code> by hand; reorder the queue; make a direct archive.org save (including <code>web.archive.org/save</code>) outside this pipeline; write approvals by hand; register work without a ticket number.</p>
 <p>Details: <code>archiving.md</code> and <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a>.</p>
 </div>
 """
@@ -253,7 +253,7 @@ def write_now(view: Path, d: dict) -> None:
         waiting.append(f"{anq:,} approved files are waiting to be promoted (the worker promotes 2 per run).")
     ru = stages.get("ready-unapproved")
     if ru:
-        waiting.append(f"{ru:,} ready files have no approval yet.")
+        waiting.append(f"{ru:,} ready files are not approved yet. The worker auto-approves ready items that have a ticket number; the rest need one.")
     held = stages.get("held")
     if held:
         waiting.append(f'{held:,} files still carry the 14 Nov hold stamp ({tlink(1358)} decides).')
@@ -269,7 +269,7 @@ def write_now(view: Path, d: dict) -> None:
         ("Waiting in queue", f'{d.get("queue_len", 0):,}'),
         ("Problems", f'{len(d.get("problems") or []):,}'),
         ("Verified captures", f'{len(d.get("completed") or []):,}'),
-        ("Approved object IDs", f'{d.get("approved_ids", 0):,}'),
+        ("Approved object IDs", f'{d.get("approved_ids", 0):,} <span class="muted">({d.get("approved_policy", 0):,} auto)</span>'),
     ]
     tile_html = "".join(f'<div class="tile"><span>{e(k)}</span><b>{v}</b></div>' for k, v in tiles)
     cur_html = (f'<p><b>{e(cur.get("event"))}</b> {safe_link(cur.get("url"))} at {when(cur.get("at"))}</p>'
@@ -322,7 +322,7 @@ Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)
 <div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{prows}</table></div>{pmore}</section>
 <section class="panel" id="completed"><h2 id="verified">Completed / Verified ({len(completed):,})</h2><p class="muted">Newest verified capture first. Verified date is done.json <code>verify.at</code> (UTC-4). The Wayback column is the recorded capture URL; Preservation is whether linker.json has a File-page link for that capture. "unknown" means that fact was not recorded.</p>
 <div class="scroll"><table><tr><th>Verified date (UTC-4)</th><th>File or URL</th><th>Ticket</th><th>archive.org</th><th>Preservation link</th></tr>{crows}</table></div>{cmore}</section>
-<section class="panel" id="approved"><h2>Recently approved</h2><p class="muted">Append-only log. Past entries were rebuilt from approved-objects.json scopes, its dated backups and their file times. New changes are recorded by a hook when the file changes. The log never edits what is approved.</p>
+<section class="panel" id="approved"><h2>Recently approved</h2><p class="muted">Append-only log. Operator approvals come from approved-objects.json (past entries rebuilt from its scopes, dated backups and file times; new changes recorded by a hook). Since 25 Nov 2026 the worker also auto-approves ready registrations that carry a work ticket number; those rows show Source "worker policy". This page never edits what is approved.</p>
 <div class="scroll"><table><tr><th>When</th><th>Ticket</th><th>Change</th><th>Total after</th><th>Source</th><th>Reason</th></tr>{arows}</table></div></section>
 <section class="panel" id="missing"><h2>Missing a Wayback link</h2><p class="muted">Every wiki file without a verified copy and Preservation link, plus registered snapshots not yet verified, grouped by originating ticket. Rebuilt nightly; generated {when(groups.get("generated_at"))}.</p>
 <table><tr><th>Ticket</th><th>Items</th></tr>{mrows}</table></section>

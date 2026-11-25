@@ -78,6 +78,8 @@ class Paths:
         self.state, self.repo, self.work, self.view = Path(a.state), Path(a.repo), Path(a.work), Path(a.view)
         self.registry = self.state / "registry"
         self.approved = self.registry / "approved-objects.json"
+        self.policy_log = self.registry / "policy-approvals.jsonl"
+        self.policy_flagged = self.registry / "policy-unapproved.json"
         self.queue = self.repo / "ops/wayback/queue.txt"
         self.done = self.repo / "ops/wayback/done.json"
         self.health = self.state / "health.json"
@@ -175,6 +177,35 @@ def read_applog(p: Paths) -> list[dict]:
     except OSError:
         pass
     return out
+
+
+POLICY_REASON = ("Auto-approved by the worker: ready, backup receipt and a work ticket number "
+                 "(Bill 2026-11-25, #1359 Q1).")
+
+
+def read_policy(p: Paths) -> tuple[set[str], list[dict]]:
+    """Worker ticket auto-approvals (read-only): (object ids, log rows per run and ticket)."""
+    ids: set[str] = set()
+    groups: dict[tuple, int] = {}
+    try:
+        with open(p.policy_log, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                oid = rec.get("object_id") if isinstance(rec, dict) else None
+                if not isinstance(oid, str) or oid in ids:
+                    continue
+                ids.add(oid)
+                key = (str(rec.get("at") or ""), core.ticket_of(rec.get("ticket")))
+                groups[key] = groups.get(key, 0) + 1
+    except OSError:
+        pass
+    rows = [{"at": at or None, "ticket": ticket, "change": "auto-approved", "count": n,
+             "source": "worker policy", "reason": POLICY_REASON}
+            for (at, ticket), n in groups.items()]
+    return ids, rows
 
 
 # --------------------------------------------------------------------------- registry
@@ -508,6 +539,19 @@ def build_now(p: Paths) -> dict:
     cap = health.get("account_capacity") or control.get("account_capacity") or {}
     warnings = alerts(now=now, health=health, rows=rows, sweep=sweep, svc=svc, index_mtime=_mtime(p.index))
     approvals_log = read_applog(p)
+    policy_ids, policy_rows = read_policy(p)
+    explicit_ids = set(map(str, approved.get("object_ids") or []))
+    running = len(explicit_ids)
+    for row in sorted(policy_rows, key=lambda r: (r["at"] or "", r["ticket"] or 0)):
+        running += row["count"]
+        row["total_after"] = running
+    approvals_log = sorted(approvals_log + policy_rows, key=lambda r: r.get("at") or "")
+    flagged = load_json(p.policy_flagged, {}) or {}
+    no_ticket = flagged.get("no_ticket")
+    if isinstance(no_ticket, int) and no_ticket > 0:
+        warnings.append(f"{no_ticket:,} ready registered items have no ticket number, so the worker "
+                        f"did not auto-approve them (checked {flagged.get('checked_at') or 'unknown'}). "
+                        "Re-register them with a work ticket number.")
     return {
         "schema": 1,
         "generated_at": now.isoformat(timespec="seconds"),
@@ -525,7 +569,10 @@ def build_now(p: Paths) -> dict:
         "problems": problems,
         "completed": completed,
         "ledger": status_counts,
-        "approved_ids": len(approved.get("object_ids") or []),
+        "approved_ids": len(explicit_ids | policy_ids),
+        "approved_explicit": len(explicit_ids),
+        "approved_policy": len(policy_ids - explicit_ids),
+        "no_ticket": no_ticket if isinstance(no_ticket, int) else None,
         "approval_scopes": [{"ticket": core.ticket_of(sc.get("ticket")),
                              "count": len(sc["exact_object_ids"]) if isinstance(sc.get("exact_object_ids"), list) else sc.get("approved_objects"),
                              "reviewed_at": sc.get("reviewed_at"), "reason": str(sc.get("reason") or "")[:300]}
@@ -613,7 +660,7 @@ def wiki_allimages(api: str) -> list[dict]:
 def run_sweep(p: Paths, api: str) -> dict:
     now = utc_now()
     approved = load_json(p.approved, {}) or {}
-    approved_ids = set(map(str, approved.get("object_ids") or []))
+    approved_ids = set(map(str, approved.get("object_ids") or [])) | read_policy(p)[0]
     sidx = core.scope_index(approved)
     dix = done_index(load_json(p.done, {}) or {})
     try:

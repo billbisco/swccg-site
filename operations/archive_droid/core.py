@@ -16,7 +16,7 @@ STAGES = (
     ("problem", "Failed, retry or unverified capture"),
     ("queued", "In queue.txt or submitted, not verified yet"),
     ("approved-not-queued", "Approved, waiting to be promoted into the queue"),
-    ("ready-unapproved", "Ready, not in approved-objects.json"),
+    ("ready-unapproved", "Ready, not approved yet (no ticket number, or the hourly auto-approval has not run)"),
     ("held", "Still stamped with the 14 Nov 2026 hold (#1358 decides)"),
     ("not-ready", "Registered, not ready for another reason"),
     ("unregistered", "On the wiki, no preservation registry entry"),
