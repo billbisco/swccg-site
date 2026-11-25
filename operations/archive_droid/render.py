@@ -38,7 +38,9 @@ def e(x) -> str:
 
 # Hosted on a personal or private GitHub account — never write the URL into the page.
 _PRIVATE_REPO = re.compile(
-    r"(?i)(?:^|://)(?:www\.)?(?:github\.com|raw\.githubusercontent\.com)/billbisco(?:/|$)"
+    r"(?i)(?:(?:^|://)(?:www\.)?(?:github\.com|raw\.githubusercontent\.com)/billbisco(?:/|$)"
+    r"|/snapshots/github/(?:[^/?#]+/)*billbisco(?:/|$|\.)"
+    r"|%2Fbillbisco(?:%2F|$))"
 )
 
 
