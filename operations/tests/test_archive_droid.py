@@ -158,8 +158,14 @@ class RenderTests(unittest.TestCase):
         self.assertIsNone(data["completed"][1]["verified_at"])  # no verify.at -> unknown, not last
         self.assertEqual(data["completed"][0]["preservation"], "yes")
         self.assertEqual(data["completed"][1]["preservation"], "unknown")
-        self.assertEqual(data["queue"][0]["queued_at"], "2026-11-19T15:00:00+00:00")
-        self.assertIsNone(data["queue"][1].get("queued_at"))
+        self.assertEqual(data["queue"][0]["added_at"], "2026-11-19T15:00:00+00:00")
+        self.assertEqual(data["queue"][0]["added_source"], "registry")
+        self.assertEqual(data["queue"][0]["added_field"], "queued_at")
+        self.assertEqual(data["queue"][1]["added_source"], "on-or-before")
+        self.assertTrue(data["queue"][1]["added_at"])
+        self.assertEqual(data["problems"][0]["added_source"], "on-or-before")
+        self.assertEqual(data["added_counts"]["registry"], 1)
+        self.assertEqual(data["added_counts"]["on-or-before"], 2)  # pending + failed
         render.write_now(view, data)
         html = (view / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="queue"', html)
@@ -179,11 +185,87 @@ class RenderTests(unittest.TestCase):
         self.assertIn("Verified.png", html[html.find('id="completed"'):])
         self.assertIn("unknown", html)  # date or preservation gaps
         self.assertIn("Wayback", html)
-        self.assertIn("19 Nov 2026", html)  # queued_at 15:00 UTC -> 11:00 UTC-4
+        self.assertIn("19 Nov 2026", html)  # registry queued_at 15:00 UTC -> 11:00 UTC-4
+        self.assertIn("Date added", html)
+        self.assertIn("First seen by page", html)
+        self.assertIn("on or before", html)
+        self.assertIn("registry (queued_at)", html)
         self.assertTrue((view / "completed/1.html").exists())
         self.assertNotIn("web.archive.org/web/20261101000000", render.when_known(None))
         self.assertEqual(render.when_known(None), "unknown")
         self.assertEqual(render.when_known(""), "unknown")
+
+
+    def test_first_seen_log_is_append_only_and_ignores_upload_timestamp(self):
+        from operations.archive_droid import collect, render
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state, repo, work, view = root / "state", root / "repo", root / "work", root / "view"
+        (repo / "ops/wayback").mkdir(parents=True)
+        (state / "registry/requests/job/obj").mkdir(parents=True)
+        (work).mkdir(parents=True)
+        (view).mkdir(parents=True)
+        already = "https://swccg.com/wiki/images/a/aa/Already.png"
+        later = "https://swccg.com/wiki/images/b/bb/Later.png"
+        (repo / "ops/wayback/queue.txt").write_text(already + "\n")
+        (repo / "ops/wayback/done.json").write_text("{}")
+        # Wiki upload_timestamp must not be used as Date added.
+        (state / "registry/requests/job/obj/req.json").write_text(json.dumps({
+            "schema_version": 1, "subject": {"kind": "wiki_file_version", "title": "Already.png",
+                                             "upload_timestamp": "2020-01-01T00:00:00Z",
+                                             "original_version_url": already},
+            "source": {"url": already, "sha256": "a"*64, "bytes": 1},
+            "readiness": {"ready": True, "reason": "x", "stage_bytes": 1},
+            "owner": "x", "continuation": "x", "approval_scope": {"ticket": 1},
+        }))
+        args = mock.Mock(state=state, repo=repo, work=work, view=view)
+        paths = collect.Paths(args)
+        first = collect.build_now(paths)
+        self.assertEqual(first["queue"][0]["added_source"], "on-or-before")
+        self.assertNotIn("2020-01-01", first["queue"][0]["added_at"])
+        seed_at = first["queue"][0]["added_at"]
+        log = (work / "first-seen.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"event":"seed-done"', log)
+        first_log = log
+        # A later registry date for the same URL must not rewrite the log.
+        (state / "registry/promotions").mkdir(parents=True)
+        (state / "registry/promotions/aa.json").write_text(json.dumps({
+            "source_url": already, "registered_at": "2019-06-01T00:00:00Z"}))
+        (repo / "ops/wayback/queue.txt").write_text(already + "\n" + later + "\n")
+        second = collect.build_now(paths)
+        self.assertEqual(second["queue"][0]["added_at"], seed_at)
+        self.assertEqual(second["queue"][0]["added_source"], "on-or-before")
+        self.assertEqual(second["queue"][1]["added_source"], "first-seen")
+        self.assertTrue(second["queue"][1]["added_at"])
+        later_log = (work / "first-seen.jsonl").read_text(encoding="utf-8")
+        self.assertTrue(later_log.startswith(first_log))  # append-only
+        self.assertIn("Later.png", later_log)
+        render.write_now(view, second)
+        html = (view / "index.html").read_text(encoding="utf-8")
+        self.assertIn("first seen by page", html)
+        self.assertIn("on or before", html)
+        self.assertNotIn("2019-06-01", html)
+        self.assertNotIn("2020-01-01", html)
+        # Request with a real registered_at, on a fresh state+work dir, is used for seed.
+        state2, work2, view2 = root / "state2", root / "work2", root / "view2"
+        (state2 / "registry/requests/job/obj").mkdir(parents=True)
+        work2.mkdir(); view2.mkdir()
+        (state2 / "registry/requests/job/obj/req.json").write_text(json.dumps({
+            "schema_version": 1, "registered_at": "2026-11-10T12:00:00Z",
+            "subject": {"kind": "wiki_file_version", "title": "Already.png",
+                        "upload_timestamp": "2020-01-01T00:00:00Z",
+                        "original_version_url": already},
+            "source": {"url": already, "sha256": "a"*64, "bytes": 1},
+            "readiness": {"ready": True, "reason": "x", "stage_bytes": 1},
+            "owner": "x", "continuation": "x", "approval_scope": {"ticket": 1},
+        }))
+        paths2 = collect.Paths(mock.Mock(state=state2, repo=repo, work=work2, view=view2))
+        third = collect.build_now(paths2)
+        self.assertEqual(third["queue"][0]["added_source"], "registry")
+        self.assertEqual(third["queue"][0]["added_field"], "registered_at")
+        self.assertTrue(third["queue"][0]["added_at"].startswith("2026-11-10T12:00:00"))
+        self.assertNotIn("2020-01-01", third["queue"][0]["added_at"])
 
     def test_private_repo_urls_are_redacted(self):
         from operations.archive_droid import render

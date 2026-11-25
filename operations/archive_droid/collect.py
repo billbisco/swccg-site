@@ -6,7 +6,8 @@
 
 Read-only toward the wayback state: it never writes the registry, queue.txt,
 done.json, approved-objects.json, control/health files or worker units, and it
-never calls archive.org. Its only writes are under --work and --view.
+never calls archive.org. Its only writes are under --work and --view. The
+append-only first-seen log (first-seen.jsonl) lives in --work.
 """
 from __future__ import annotations
 
@@ -252,14 +253,51 @@ def display_stage(status: str | None) -> str:
     return "submitted" if st == "pending" else st
 
 
-def promotion_queued_at(registry: Path) -> dict[str, str]:
-    """Earliest real queued_at from registry promotions/*.json, keyed by normalized URL."""
-    out: dict[str, str] = {}
+# Real registry timestamps only. Never use wiki upload_timestamp or file mtimes.
+REGISTRY_DATE_FIELDS = ("registered_at", "requested_at", "request_time", "received_at",
+                        "recorded_at", "queued_at")
+
+
+def _as_iso(value) -> str | None:
+    """Parse a stored timestamp; return None if it is missing or not a date."""
+    if value in (None, "", "n/a"):
+        return None
+    if isinstance(value, (int, float)):
+        if value < 1_000_000_000:  # not a unix time (avoids generation counts)
+            return None
+        try:
+            return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds")
+        except (OSError, OverflowError, ValueError):
+            return None
+    try:
+        t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t.isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
+def _consider_reg_date(out: dict, url, raw, field: str) -> None:
+    at = _as_iso(raw)
+    if not url or not at:
+        return
+    k = core.norm_url(url)
+    if k not in out or at < out[k][0]:
+        out[k] = (at, field)
+
+
+def registry_item_dates(registry: Path) -> dict[str, tuple[str, str]]:
+    """Earliest real registered_at / request / queued time from the registry, keyed by URL.
+
+    Read-only. Ignores subject.upload_timestamp and filesystem mtimes.
+    """
+    out: dict[str, tuple[str, str]] = {}
     promo = Path(registry) / "promotions"
     try:
         entries = os.scandir(promo)
     except OSError:
-        return out
+        entries = ()
     for ent in entries:
         if not ent.is_file() or not ent.name.endswith(".json"):
             continue
@@ -267,14 +305,126 @@ def promotion_queued_at(registry: Path) -> dict[str, str]:
         if not isinstance(data, dict):
             continue
         url = data.get("source_url") or data.get("url")
-        at = data.get("queued_at")
-        if not url or not at:
+        for field in REGISTRY_DATE_FIELDS:
+            if data.get(field):
+                _consider_reg_date(out, url, data.get(field), field)
+    req = Path(registry) / "requests"
+    try:
+        jobs = os.scandir(req)
+    except OSError:
+        jobs = ()
+    for job in jobs:
+        if not job.is_dir():
             continue
-        k = core.norm_url(url)
-        at = str(at)
-        if k not in out or at < out[k]:
-            out[k] = at
+        for obj in os.scandir(job.path):
+            if not obj.is_dir():
+                continue
+            for root, _ds, fs in os.walk(obj.path):
+                for fn in fs:
+                    if not fn.endswith(".json"):
+                        continue
+                    data = load_json(Path(root) / fn, {}) or {}
+                    if not isinstance(data, dict):
+                        continue
+                    src = data.get("source") if isinstance(data.get("source"), dict) else {}
+                    url = (src.get("url") or (data.get("subject") or {}).get("original_version_url")
+                           or data.get("source_url") or data.get("url") or "")
+                    for field in REGISTRY_DATE_FIELDS:
+                        if data.get(field):
+                            _consider_reg_date(out, url, data.get(field), field)
+                        if src.get(field):
+                            _consider_reg_date(out, url, src.get(field), field)
     return out
+
+
+def load_first_seen(path: Path) -> tuple[dict, bool]:
+    """Append-only log: first item record for a key wins. Returns (by_key, seed_done)."""
+    out: dict[str, dict] = {}
+    seed_done = False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("kind") == "meta":
+                    if rec.get("event") == "seed-done":
+                        seed_done = True
+                    continue
+                k = rec.get("key")
+                if k and k not in out and rec.get("at"):
+                    out[k] = rec
+    except OSError:
+        pass
+    return out, seed_done
+
+
+def append_first_seen(path: Path, records: list[dict]) -> None:
+    """Append records to the first-seen log. Never rewrites earlier lines."""
+    if not records:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        for rec in records:
+            fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def stamp_first_seen(p: Paths, rows: list[dict], *, now: datetime) -> dict[str, int]:
+    """Record the first time the page collector sees each queue/problem URL.
+
+    The log lives under the collector work directory only. On the first run,
+    existing items are seeded with the earliest real registry date if one
+    exists, otherwise 'on or before' now. Later new items get an exact
+    first-seen time. Existing log records are never changed.
+    """
+    path = p.work / "first-seen.jsonl"
+    seen, seed_done = load_first_seen(path)
+    seed_mode = not seed_done
+    dates = registry_item_dates(p.registry) if seed_mode else {}
+    now_iso = now.isoformat(timespec="seconds")
+    new: list[dict] = []
+    if seed_mode and not path.exists():
+        new.append({"kind": "meta", "event": "started", "at": now_iso})
+    for row in rows:
+        k = core.norm_url(row.get("url") or "")
+        if not k:
+            continue
+        rec = seen.get(k)
+        if rec is None:
+            if seed_mode and k in dates:
+                at, field = dates[k]
+                rec = {"kind": "item", "key": k, "url": row.get("url"), "at": at,
+                       "source": "registry", "field": field}
+            elif seed_mode:
+                rec = {"kind": "item", "key": k, "url": row.get("url"), "at": now_iso,
+                       "source": "on-or-before", "field": None}
+            else:
+                rec = {"kind": "item", "key": k, "url": row.get("url"), "at": now_iso,
+                       "source": "first-seen", "field": None}
+            new.append(rec)
+            seen[k] = rec
+        row["added_at"] = rec.get("at")
+        row["added_source"] = rec.get("source")
+        row["added_field"] = rec.get("field")
+    if seed_mode:
+        new.append({"kind": "meta", "event": "seed-done", "at": now_iso,
+                    "count": sum(1 for rec in seen.values() if rec.get("at"))})
+    append_first_seen(path, new)
+    counts = {"registry": 0, "on-or-before": 0, "first-seen": 0, "unknown": 0}
+    for row in rows:
+        src = row.get("added_source") or "unknown"
+        counts[src] = counts.get(src, 0) + 1
+    return counts
 
 
 def linker_preservation(linker: dict) -> dict[str, str]:
@@ -312,7 +462,6 @@ def build_now(p: Paths) -> dict:
         queue = []
     cur = last_submitted()
     cur_key = core.norm_url(cur.get("url", ""))
-    queued_at = promotion_queued_at(p.registry)
     pres = linker_preservation(load_json(p.linker, {}) or {})
     rows = []
     waiting, problems = [], []
@@ -323,7 +472,7 @@ def build_now(p: Paths) -> dict:
         st = d.get("status") or "new"
         row = {"pos": i, "url": url, "ticket": tickets_by_url.get(k), "stage": st,
                "current": bool(cur_key) and k == cur_key,
-               "queued_at": queued_at.get(k), "last": d.get("last"),
+               "last": d.get("last"),
                "capture": d.get("capture") or "", "verified_at": d.get("verified_at")}
         rows.append(row)
         if st in PROBLEM_STATUSES:
@@ -337,7 +486,7 @@ def build_now(p: Paths) -> dict:
             continue
         problems.append({"pos": None, "url": d.get("url") or k, "ticket": tickets_by_url.get(k),
                          "stage": display_stage(d.get("status")), "current": bool(cur_key) and k == cur_key,
-                         "queued_at": queued_at.get(k), "last": d.get("last"),
+                         "last": d.get("last"),
                          "capture": d.get("capture") or "", "verified_at": d.get("verified_at")})
     completed = []
     for k, d in dix.items():
@@ -349,6 +498,7 @@ def build_now(p: Paths) -> dict:
                           "preservation": pres.get(cap) or "unknown",
                           "current": bool(cur_key) and k == cur_key})
     completed.sort(key=lambda r: r.get("verified_at") or "", reverse=True)
+    added_counts = stamp_first_seen(p, waiting + problems, now=now)
     svc = systemd_show("swccg-wayback.service", "ActiveState,Result,ExecMainStartTimestamp,ExecMainExitTimestamp")
     tmr = systemd_show("swccg-wayback.timer", "ActiveState,LastTriggerUSec,NextElapseUSecRealtime,NextElapseUSecMonotonic")
     status_counts: dict[str, int] = {}
@@ -385,6 +535,7 @@ def build_now(p: Paths) -> dict:
         "stages": stages,
         "sweep_generated_at": sweep.get("generated_at"),
         "warnings": warnings,
+        "added_counts": added_counts,
     }
 
 
@@ -582,7 +733,7 @@ def main(argv=None) -> int:
             data = build_now(p)
             atomic_write(p.now, json.dumps(data))
             render.write_now(p.view, data)
-            print("ARCHIVE-DROID now queue=%d approvals_new=%d warnings=%d" % (data["queue_len"], n, len(data["warnings"])))
+            print("ARCHIVE-DROID now queue=%d approvals_new=%d warnings=%d added=%s" % (data["queue_len"], n, len(data["warnings"]), data.get("added_counts")))
         else:
             s = run_sweep(p, a.wiki_api)
             data = build_now(p)
