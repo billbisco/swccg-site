@@ -190,6 +190,8 @@ class RenderTests(unittest.TestCase):
         self.assertIn("First seen by page", html)
         self.assertIn("How this queue works (for every AI)", html)
         self.assertIn("preservation_enqueue.py", html)
+        self.assertIn("auto-approves", html)
+        self.assertIn("AIs do not hand-write approvals", html)
         self.assertIn("id=\"how-queue\"", html)
         self.assertIn("Do not", html)
         self.assertIn("on or before", html)
@@ -270,6 +272,36 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(third["queue"][0]["added_field"], "registered_at")
         self.assertTrue(third["queue"][0]["added_at"].startswith("2026-11-10T12:00:00"))
         self.assertNotIn("2020-01-01", third["queue"][0]["added_at"])
+
+
+    def test_policy_approvals_show_in_log_and_ticketless_flag(self):
+        from operations.archive_droid import collect, render
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state, repo, work, view = root / "state", root / "repo", root / "work", root / "view"
+        for d in (repo / "ops/wayback", state / "registry", work, view):
+            d.mkdir(parents=True)
+        (repo / "ops/wayback/queue.txt").write_text("")
+        (repo / "ops/wayback/done.json").write_text("{}")
+        (state / "registry/approved-objects.json").write_text(json.dumps({"object_ids": ["a" * 64]}))
+        lines = [{"object_id": "b" * 64, "ticket": 1310, "at": "2026-11-25T21:00:00+00:00"},
+                 {"object_id": "c" * 64, "ticket": 1310, "at": "2026-11-25T21:00:00+00:00"},
+                 {"object_id": "d" * 64, "ticket": 615, "at": "2026-11-25T21:00:00+00:00"},
+                 {"object_id": "b" * 64, "ticket": 1310, "at": "2026-11-25T22:00:00+00:00"}]
+        (state / "registry/policy-approvals.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+        (state / "registry/policy-unapproved.json").write_text(json.dumps({"no_ticket": 7, "checked_at": "2026-11-25T21:00:00+00:00"}))
+        data = collect.build_now(collect.Paths(mock.Mock(state=state, repo=repo, work=work, view=view)))
+        self.assertEqual(data["approved_ids"], 4)
+        self.assertEqual(data["approved_policy"], 3)
+        rows = [r for r in data["approvals_log"] if r.get("source") == "worker policy"]
+        self.assertEqual(sorted((r["ticket"], r["count"]) for r in rows), [(615, 1), (1310, 2)])
+        self.assertEqual(max(r["total_after"] for r in rows), 4)
+        self.assertTrue(any("7 ready registered items have no ticket number" in w for w in data["warnings"]))
+        render.write_now(view, data)
+        html = (view / "index.html").read_text(encoding="utf-8")
+        self.assertIn("worker policy", html)
+        self.assertIn("auto-approved 2", html)
 
     def test_private_repo_urls_are_redacted(self):
         from operations.archive_droid import render
