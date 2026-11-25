@@ -2,7 +2,7 @@
 # Install the Archive Droid staff page on gemp (swccg-guild/work#1360). Run as root from the
 # unpacked bundle directory. Read-only toward the wayback state; proves that with before/after hashes.
 set -euo pipefail
-B=$(cd "$(dirname "$0")" && pwd)          # bundle root (contains operations/)
+B=${BUNDLE:-$PWD}                          # bundle root (contains operations/); run from there
 OPS=/opt/swccg-operations
 WORK=/mnt/HC_Volume_107153504/work/archive-droid
 VIEW=/mnt/HC_Volume_107153504/archive-droid-view
