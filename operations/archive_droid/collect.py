@@ -233,9 +233,64 @@ def last_submitted(limit: int = 600) -> dict:
 def done_index(done: dict) -> dict[str, dict]:
     out = {}
     for url, rec in (done or {}).items():
-        if isinstance(rec, dict):
-            out[core.norm_url(url)] = {"url": url, "status": rec.get("status"),
-                                       "capture": rec.get("capture") or "", "last": rec.get("last")}
+        if not isinstance(rec, dict):
+            continue
+        verify = rec.get("verify") if isinstance(rec.get("verify"), dict) else {}
+        out[core.norm_url(url)] = {"url": url, "status": rec.get("status"),
+                                   "capture": rec.get("capture") or "", "last": rec.get("last"),
+                                   "verified_at": verify.get("at") or None}
+    return out
+
+
+PROBLEM_STATUSES = frozenset({"failed", "retry"})
+# Still waiting (not yet verified). pending is shown as "submitted".
+WAITING_STATUSES = frozenset({"new", "queued", "pending", "submitted", "ok", "unverified"})
+
+
+def display_stage(status: str | None) -> str:
+    st = status or "new"
+    return "submitted" if st == "pending" else st
+
+
+def promotion_queued_at(registry: Path) -> dict[str, str]:
+    """Earliest real queued_at from registry promotions/*.json, keyed by normalized URL."""
+    out: dict[str, str] = {}
+    promo = Path(registry) / "promotions"
+    try:
+        entries = os.scandir(promo)
+    except OSError:
+        return out
+    for ent in entries:
+        if not ent.is_file() or not ent.name.endswith(".json"):
+            continue
+        data = load_json(Path(ent.path), {}) or {}
+        if not isinstance(data, dict):
+            continue
+        url = data.get("source_url") or data.get("url")
+        at = data.get("queued_at")
+        if not url or not at:
+            continue
+        k = core.norm_url(url)
+        at = str(at)
+        if k not in out or at < out[k]:
+            out[k] = at
+    return out
+
+
+def linker_preservation(linker: dict) -> dict[str, str]:
+    """Wayback capture URL -> 'yes' or 'no' from linker.json. Absent means unknown."""
+    out: dict[str, str] = {}
+    for key, val in (linker or {}).items():
+        if not isinstance(key, str) or "|" not in key:
+            continue
+        cap = key.split("|", 1)[1]
+        if not cap:
+            continue
+        good = str(val) not in core.LINK_BAD
+        if good:
+            out[cap] = "yes"
+        elif cap not in out:
+            out[cap] = "no"
     return out
 
 
@@ -257,13 +312,43 @@ def build_now(p: Paths) -> dict:
         queue = []
     cur = last_submitted()
     cur_key = core.norm_url(cur.get("url", ""))
+    queued_at = promotion_queued_at(p.registry)
+    pres = linker_preservation(load_json(p.linker, {}) or {})
     rows = []
+    waiting, problems = [], []
+    seen_problems: set[str] = set()
     for i, url in enumerate(queue, 1):
         k = core.norm_url(url)
         d = dix.get(k) or {}
         st = d.get("status") or "new"
-        rows.append({"pos": i, "url": url, "ticket": tickets_by_url.get(k), "stage": st,
-                     "current": bool(cur_key) and k == cur_key})
+        row = {"pos": i, "url": url, "ticket": tickets_by_url.get(k), "stage": st,
+               "current": bool(cur_key) and k == cur_key,
+               "queued_at": queued_at.get(k), "last": d.get("last"),
+               "capture": d.get("capture") or "", "verified_at": d.get("verified_at")}
+        rows.append(row)
+        if st in PROBLEM_STATUSES:
+            problems.append({**row, "stage": display_stage(st)})
+            seen_problems.add(k)
+        elif st != "verified":
+            waiting.append({**row, "stage": display_stage(st)})
+    # Failed/retry items no longer in queue.txt still belong in Problems (work-order first, then the rest).
+    for k, d in dix.items():
+        if (d.get("status") or "") not in PROBLEM_STATUSES or k in seen_problems:
+            continue
+        problems.append({"pos": None, "url": d.get("url") or k, "ticket": tickets_by_url.get(k),
+                         "stage": display_stage(d.get("status")), "current": bool(cur_key) and k == cur_key,
+                         "queued_at": queued_at.get(k), "last": d.get("last"),
+                         "capture": d.get("capture") or "", "verified_at": d.get("verified_at")})
+    completed = []
+    for k, d in dix.items():
+        if d.get("status") != "verified":
+            continue
+        cap = d.get("capture") or ""
+        completed.append({"url": d.get("url") or k, "ticket": tickets_by_url.get(k),
+                          "verified_at": d.get("verified_at"), "capture": cap,
+                          "preservation": pres.get(cap) or "unknown",
+                          "current": bool(cur_key) and k == cur_key})
+    completed.sort(key=lambda r: r.get("verified_at") or "", reverse=True)
     svc = systemd_show("swccg-wayback.service", "ActiveState,Result,ExecMainStartTimestamp,ExecMainExitTimestamp")
     tmr = systemd_show("swccg-wayback.timer", "ActiveState,LastTriggerUSec,NextElapseUSecRealtime,NextElapseUSecMonotonic")
     status_counts: dict[str, int] = {}
@@ -284,8 +369,11 @@ def build_now(p: Paths) -> dict:
         "capacity": {k: cap.get(k) for k in ("available", "processing", "daily_captures", "daily_captures_limit")},
         "service": svc, "timer": tmr,
         "current": cur,
-        "queue": rows,
-        "queue_len": len(rows),
+        "queue": waiting,
+        "queue_len": len(waiting),
+        "queue_txt_len": len(rows),
+        "problems": problems,
+        "completed": completed,
         "ledger": status_counts,
         "approved_ids": len(approved.get("object_ids") or []),
         "approval_scopes": [{"ticket": core.ticket_of(sc.get("ticket")),
