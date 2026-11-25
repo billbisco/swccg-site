@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Archive Droid reconcile sweep (03:40 America/Caracas)
+
+[Timer]
+OnCalendar=*-*-* 07:40:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

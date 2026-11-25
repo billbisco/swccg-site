@@ -1,0 +1,9 @@
+[Unit]
+Description=Record approved-objects.json changes in the Archive Droid approval log (never edits approvals)
+
+[Path]
+PathChanged=/root/.local/state/swccg-wayback/registry/approved-objects.json
+Unit=archive-droid-approvals.service
+
+[Install]
+WantedBy=paths.target

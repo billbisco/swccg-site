@@ -1,0 +1,30 @@
+[Unit]
+Description=Archive Droid staff page: read-only approvals collector (swccg-guild/work#1360)
+RequiresMountsFor=/opt/swccg-operations /mnt/HC_Volume_107153504
+
+[Service]
+Type=oneshot
+# Root only to read the 0700 wayback state; ProtectSystem/ProtectHome make that state read-only here.
+ExecStart=/usr/bin/python3 -I -B /opt/swccg-operations/operations/archive_droid/collect.py approvals
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+TimeoutStartSec=4min
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0027
+ReadWritePaths=/mnt/HC_Volume_107153504/work/archive-droid /mnt/HC_Volume_107153504/archive-droid-view
+WorkingDirectory=/opt/swccg-operations
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=600M
