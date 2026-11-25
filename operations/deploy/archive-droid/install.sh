@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install the Archive Droid staff page on gemp (swccg-guild/work#1360). Run as root from the
+# Install the unlisted, read-only Archive Droid page on gemp (swccg-guild/work#1360). Run as root from the
 # unpacked bundle directory. Read-only toward the wayback state; proves that with before/after hashes.
 set -euo pipefail
 B=${BUNDLE:-$PWD}                          # bundle root (contains operations/); run from there
@@ -68,11 +68,26 @@ state_hash > "$EV/after-$TS.txt"
 if diff -q "$EV/before-$TS.txt" "$EV/after-$TS.txt" >/dev/null; then echo "READ-ONLY PROOF: wayback state identical before/after"; else echo "STATE CHANGED during install (worker may have run):"; diff "$EV/before-$TS.txt" "$EV/after-$TS.txt" | cut -c1-200; fi
 
 echo "== checks"
-for u in /admin/operations/archive-droid/ /admin/operations/archive-droid /admin/operations/archive-droid/missing/untraced-1.html /admin/operations/archive-droid/missing/groups.json /admin/operations/; do
-  printf '%s anon -> %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "https://swccg.com$u")"
-done
-printf 'POST anon -> %s\n' "$(curl -s -o /dev/null -w '%{http_code}' -X POST https://swccg.com/admin/operations/archive-droid/)"
-curl -s https://swccg.com/admin/operations/archive-droid/ | head -c 300; echo
+# Archive Droid is unlisted (no staff gate); the Operations overview stays gated.
+check_get() {
+  local u=$1 expect=$2
+  local hdr body code robots
+  body=$(mktemp)
+  hdr=$(mktemp)
+  code=$(curl -sS -D "$hdr" -o "$body" -w '%{http_code}' "https://swccg.com$u")
+  robots=$(awk 'BEGIN{IGNORECASE=1} /^X-Robots-Tag:/{sub(/\r$/,""); print; exit}' "$hdr")
+  printf '%s anon -> %s %s\n' "$u" "$code" "$robots"
+  if [ "$code" != "$expect" ]; then echo "UNEXPECTED status for $u (want $expect)"; fi
+  if [ "$expect" = 200 ] && ! grep -qi 'noindex' <<<"$robots"; then echo "MISSING X-Robots-Tag noindex on $u"; fi
+  rm -f "$hdr" "$body"
+}
+check_get /admin/operations/archive-droid/ 200
+check_get /admin/operations/archive-droid/missing/untraced-1.html 200
+check_get /admin/operations/archive-droid/missing/groups.json 200
+printf '/admin/operations/archive-droid anon redirect -> %s\n' "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://swccg.com/admin/operations/archive-droid)"
+printf '/admin/operations/ anon -> %s\n' "$(curl -sS -o /dev/null -w '%{http_code}' https://swccg.com/admin/operations/)"
+printf 'POST anon -> %s\n' "$(curl -sS -o /dev/null -w '%{http_code}' -X POST https://swccg.com/admin/operations/archive-droid/)"
+curl -sS https://swccg.com/admin/operations/archive-droid/ | tr '\n' ' ' | grep -o 'meta name="robots"[^>]*' || echo 'MISSING meta robots'
 runuser -u www-data -- head -c 120 "$VIEW/index.html" >/dev/null && echo "www-data can read the page files"
 ls -ld /mnt/HC_Volume_107153504 "$VIEW"; ls "$VIEW/missing" | wc -l; du -sh "$VIEW"
 grep -c 'archive-droid' "$OPS/operations/dashboard.py" || true
