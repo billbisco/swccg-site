@@ -188,6 +188,10 @@ class RenderTests(unittest.TestCase):
         self.assertIn("19 Nov 2026", html)  # registry queued_at 15:00 UTC -> 11:00 UTC-4
         self.assertIn("Date added", html)
         self.assertIn("First seen by page", html)
+        self.assertIn("How this queue works (for every AI)", html)
+        self.assertIn("preservation_enqueue.py", html)
+        self.assertIn("id=\"how-queue\"", html)
+        self.assertIn("Do not", html)
         self.assertIn("on or before", html)
         self.assertIn("registry (queued_at)", html)
         self.assertTrue((view / "completed/1.html").exists())
