@@ -79,6 +79,27 @@ def when_known(value) -> str:
     return "unknown" if text == "—" else text
 
 
+def added_cell(r) -> str:
+    """Date added with its source. Never invents a date."""
+    at = r.get("added_at")
+    src = r.get("added_source") or ""
+    field = r.get("added_field") or ""
+    if not at:
+        return "unknown"
+    date = when_known(at)
+    if date == "unknown":
+        return "unknown"
+    if src == "on-or-before":
+        label = "on or before"
+    elif src == "first-seen":
+        label = "first seen by page"
+    elif src == "registry":
+        label = f"registry ({field})" if field else "registry"
+    else:
+        label = src or "unknown"
+    return f'{date} <span class="muted">{e(label)}</span>'
+
+
 def tlink(ticket) -> str:
     if ticket in (None, "", "untraced"):
         return '<span class="muted">untraced</span>'
@@ -142,7 +163,7 @@ def _waiting_rows(rows, *, problems: bool = False) -> str:
         out.append(
             f'<tr{attr}><td>{_pos(r)}</td><td>{safe_link(r.get("url"))}</td>'
             f'<td>{tlink(r.get("ticket"))}</td><td>{e(r.get("stage"))}</td>'
-            f'<td>{when_known(r.get("queued_at"))}</td><td>{when_known(r.get("last"))}</td></tr>'
+            f'<td>{added_cell(r)}</td><td>{when_known(r.get("last"))}</td></tr>'
         )
     return "".join(out) or '<tr><td colspan=6 class="muted">None.</td></tr>'
 
@@ -271,10 +292,10 @@ Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)
 <h3>Why it is waiting</h3><ul>{"".join(f"<li>{w}</li>" for w in waiting) or "<li>Nothing is waiting.</li>"}</ul>
 <h3>Stall checks</h3><ul>{warn_html}</ul>
 <h3>Every wiki file, by stage</h3><table><tr><th>Stage</th><th>Files</th><th>Meaning</th></tr>{stage_rows}</table></section>
-<section class="panel" id="queue"><h2>Queue ({len(q):,})</h2><p class="muted">Still waiting, in worker queue order (new, submitted, ok, unverified). Verified items are in <a href="#completed">Completed</a>; failed and retry are in <a href="#problems">Problems</a>. ▶ marks the item the worker most recently submitted or checked. Dates come from the registry (date queued) and done.json (last tried); "unknown" means no date was recorded. Times are UTC-4.</p>
-<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added or queued</th><th>Last tried</th></tr>{qrows}</table></div>{more}</section>
-<section class="panel" id="problems"><h2>Problems ({len(problems):,})</h2><p class="muted">Failed and retry items. Queue-order first, then any that have left queue.txt. Last tried is done.json <code>last</code>.</p>
-<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added or queued</th><th>Last tried</th></tr>{prows}</table></div>{pmore}</section>
+<section class="panel" id="queue"><h2>Queue ({len(q):,})</h2><p class="muted">Still waiting, in worker queue order (new, submitted, ok, unverified). Verified items are in <a href="#completed">Completed</a>; failed and retry are in <a href="#problems">Problems</a>. ▶ marks the item the worker most recently submitted or checked. <b>Date added</b> is First seen by page: the first time this page's 5-minute collector recorded the item. The earliest first-seen records start today. Items already in the queue then are marked <i>on or before</i> that time, unless a real registry time (registered_at or request time) exists. The source of each date is shown; dates are never invented. Last tried is done.json <code>last</code>. Times are UTC-4.</p>
+<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{qrows}</table></div>{more}</section>
+<section class="panel" id="problems"><h2>Problems ({len(problems):,})</h2><p class="muted">Failed and retry items. Queue-order first, then any that have left queue.txt. Date added is First seen by page, with the same sources as the Queue table. Last tried is done.json <code>last</code>.</p>
+<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{prows}</table></div>{pmore}</section>
 <section class="panel" id="completed"><h2 id="verified">Completed / Verified ({len(completed):,})</h2><p class="muted">Newest verified capture first. Verified date is done.json <code>verify.at</code> (UTC-4). The Wayback column is the recorded capture URL; Preservation is whether linker.json has a File-page link for that capture. "unknown" means that fact was not recorded.</p>
 <div class="scroll"><table><tr><th>Verified date (UTC-4)</th><th>File or URL</th><th>Ticket</th><th>archive.org</th><th>Preservation link</th></tr>{crows}</table></div>{cmore}</section>
 <section class="panel" id="approved"><h2>Recently approved</h2><p class="muted">Append-only log. Past entries were rebuilt from approved-objects.json scopes, its dated backups and their file times. New changes are recorded by a hook when the file changes. The log never edits what is approved.</p>
@@ -284,8 +305,8 @@ Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)
 """
     atomic(view / "index.html", page("Archive Droid", body, refresh=300))
     write_list_pages(view, "problems", "Problems", problems,
-                     "Failed and retry items. Queue-order first, then any that have left queue.txt.",
-                     _waiting_rows, ("#", "File or URL", "Ticket", "Stage", "Date added or queued", "Last tried"),
+                     "Failed and retry items. Queue-order first, then any that have left queue.txt. Date added is First seen by page.",
+                     _waiting_rows, ("#", "File or URL", "Ticket", "Stage", "Date added", "Last tried"),
                      problems=True)
     write_list_pages(view, "completed", "Completed / Verified", completed,
                      "Newest verified capture first. Verified date is done.json verify.at (UTC-4).",
