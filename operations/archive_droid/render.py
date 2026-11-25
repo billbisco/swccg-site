@@ -18,6 +18,22 @@ WIKI = "https://wiki.swccg.com"
 PAGE_SIZE = 200
 BASE = "/admin/operations/archive-droid/"
 
+HOW_QUEUE = """
+<div class="how" id="how-queue">
+<h3>How this queue works (for every AI)</h3>
+<p>This queue is the worker's ordered list of URLs waiting to be saved and verified on the Wayback Machine. Every AI adds new work the same way: register it with the sanctioned helper and a ticket number. Do not edit the queue by hand.</p>
+<p><b>To add an item</b> from the swccg-wiki repo:</p>
+<code class="cmd">python3 tools/preservation_enqueue.py REQUEST.json --registry /root/.local/state/swccg-wayback/registry</code>
+<p>The request must be <code>schema_version</code> 1 and include subject, source (<code>url</code>, <code>sha256</code>, <code>bytes</code>, and <code>checked_evidence</code>), readiness, owner, continuation, <code>approval_scope</code> with the work <b>ticket number</b>, and <code>backup_receipt</code> (plus <code>source_backup_receipt</code> when the source and the page are different). Do not put credentials in the request. Field rules are in <code>ops/PRESERVATION-REGISTRATION.md</code> and in the swccg-wiki skill's <code>archiving.md</code>.</p>
+<p><b>What that command actually does.</b> It sends metadata to the server registration inbox only. It does not submit a capture, and it does not itself append a line to <code>queue.txt</code>. The receipt always says <code>submitted: false</code>. Unready items (missing backup, missing source proof, or an unready stage) stay in the registry and do not enter this queue.</p>
+<p><b>Approval and the back of the queue.</b> A registration is not an approval. An object is promoted only after an operator review records its exact object ID in <code>approved-objects.json</code>. AIs do not write that file. Once an object is approved and ready, each worker run tries at most two such jobs and, when they pass the public-byte checks, <b>appends their URLs to the back of queue.txt</b>. Existing lines are not reordered. After your story's items are registered, that story's archiving step is done; Archive Droid and standing ticket <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a> own approval, promotion, saving, verification and linking.</p>
+<p><b>Save, verify, and Preservation links.</b> The worker then submits queued URLs to archive.org one at a time, confirms each job, and records the result in <code>done.json</code>. After a capture is <code>verified</code>, the linker adds a Preservation link on the matching wiki File page, or a Preserved copy on a citing page for snapshots.</p>
+<p><b>How to read Stage in this table:</b> <i>new</i> — in the queue, not yet tried; <i>submitted</i> — sent to archive.org, waiting; <i>ok</i> — a capture exists, verification still pending; <i>unverified</i> — a capture loaded but is not yet accepted as a match. Failed and retry items are in <a href="#problems">Problems</a>. Verified items are in <a href="#completed">Completed / Verified</a>.</p>
+<p><b>Do not:</b> edit <code>queue.txt</code> or <code>done.json</code> by hand; reorder the queue; make a direct archive.org save (including <code>web.archive.org/save</code>) outside this pipeline; register or queue work without a ticket number.</p>
+<p>Details: <code>archiving.md</code> and <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a>.</p>
+</div>
+"""
+
 CSS = """
 :root{--bg:#0d1726;--panel:#14223a;--line:#24385a;--text:#e8eefb;--muted:#9fb0cc;--accent:#f0c040;--bad:#ff8080;--ok:#7fd88f}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}
@@ -30,6 +46,12 @@ tr.cur{background:#3a3210}tr.cur td:first-child::before{content:"\\25B6 ";color:
 .muted{color:var(--muted)}.thumbs{display:flex;flex-wrap:wrap;gap:10px}.thumb{width:140px;font-size:.72rem;word-break:break-all}
 .thumb img{width:140px;height:140px;object-fit:contain;background:#0a1220;border:1px solid var(--line);border-radius:6px;display:block}
 nav a{margin-right:14px}.scroll{max-height:520px;overflow:auto}code{font-size:.8rem}
+.how{border:1px solid var(--accent);border-radius:8px;padding:12px 16px;margin:0 0 14px;background:#1a2740}
+.how h3{margin:0 0 8px;font-size:1.05rem}
+.how p{margin:0 0 8px}
+.how ul{margin:0 0 8px;padding-left:1.2em}
+.how li{margin:0 0 4px}
+.how .cmd{display:block;margin:6px 0;white-space:pre-wrap}
 """
 
 
@@ -292,7 +314,9 @@ Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)
 <h3>Why it is waiting</h3><ul>{"".join(f"<li>{w}</li>" for w in waiting) or "<li>Nothing is waiting.</li>"}</ul>
 <h3>Stall checks</h3><ul>{warn_html}</ul>
 <h3>Every wiki file, by stage</h3><table><tr><th>Stage</th><th>Files</th><th>Meaning</th></tr>{stage_rows}</table></section>
-<section class="panel" id="queue"><h2>Queue ({len(q):,})</h2><p class="muted">Still waiting, in worker queue order (new, submitted, ok, unverified). Verified items are in <a href="#completed">Completed</a>; failed and retry are in <a href="#problems">Problems</a>. ▶ marks the item the worker most recently submitted or checked. <b>Date added</b> is First seen by page: the first time this page's 5-minute collector recorded the item. The earliest first-seen records start today. Items already in the queue then are marked <i>on or before</i> that time, unless a real registry time (registered_at or request time) exists. The source of each date is shown; dates are never invented. Last tried is done.json <code>last</code>. Times are UTC-4.</p>
+<section class="panel" id="queue"><h2>Queue ({len(q):,})</h2>
+{HOW_QUEUE}
+<p class="muted">Still waiting, in worker queue order (new, submitted, ok, unverified). Verified items are in <a href="#completed">Completed</a>; failed and retry are in <a href="#problems">Problems</a>. ▶ marks the item the worker most recently submitted or checked. <b>Date added</b> is First seen by page: the first time this page's 5-minute collector recorded the item. The earliest first-seen records start today. Items already in the queue then are marked <i>on or before</i> that time, unless a real registry time (registered_at or request time) exists. The source of each date is shown; dates are never invented. Last tried is done.json <code>last</code>. Times are UTC-4.</p>
 <div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{qrows}</table></div>{more}</section>
 <section class="panel" id="problems"><h2>Problems ({len(problems):,})</h2><p class="muted">Failed and retry items. Queue-order first, then any that have left queue.txt. Date added is First seen by page, with the same sources as the Queue table. Last tried is done.json <code>last</code>.</p>
 <div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{prows}</table></div>{pmore}</section>
