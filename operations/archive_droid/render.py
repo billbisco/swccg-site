@@ -69,6 +69,14 @@ def when(value) -> str:
     return e(t.astimezone(CARACAS).strftime("%a %d %b %Y %H:%M")) + " <span class=muted>(UTC-4)</span>"
 
 
+def when_known(value) -> str:
+    """Format a real timestamp, or 'unknown' when there isn't one. Never invents a date."""
+    if value in (None, "", "n/a"):
+        return "unknown"
+    text = when(value)
+    return "unknown" if text == "—" else text
+
+
 def tlink(ticket) -> str:
     if ticket in (None, "", "untraced"):
         return '<span class="muted">untraced</span>'
@@ -118,6 +126,75 @@ def _sys_when(v):
         return "—"
 
 
+
+def _pos(r) -> str:
+    pval = r.get("pos")
+    return f"{int(pval):,}" if isinstance(pval, int) and pval > 0 else "—"
+
+
+def _waiting_rows(rows, *, problems: bool = False) -> str:
+    out = []
+    for r in rows:
+        cls = " ".join(x for x in ("cur" if r.get("current") else "", "warn" if problems else "") if x)
+        attr = f' class="{cls}"' if cls else ""
+        out.append(
+            f'<tr{attr}><td>{_pos(r)}</td><td>{safe_link(r.get("url"))}</td>'
+            f'<td>{tlink(r.get("ticket"))}</td><td>{e(r.get("stage"))}</td>'
+            f'<td>{when_known(r.get("queued_at"))}</td><td>{when_known(r.get("last"))}</td></tr>'
+        )
+    return "".join(out) or '<tr><td colspan=6 class="muted">None.</td></tr>'
+
+
+def _completed_rows(rows, **_k) -> str:
+    out = []
+    for r in rows:
+        cap = r.get("capture") or ""
+        cap_html = safe_link(cap, "Wayback") if cap else "unknown"
+        cls = ' class="cur"' if r.get("current") else ""
+        out.append(
+            f'<tr{cls}><td>{when_known(r.get("verified_at"))}</td><td>{safe_link(r.get("url"))}</td>'
+            f'<td>{tlink(r.get("ticket"))}</td><td>{cap_html}</td>'
+            f'<td>{e(r.get("preservation") or "unknown")}</td></tr>'
+        )
+    return "".join(out) or '<tr><td colspan=5 class="muted">None yet.</td></tr>'
+
+
+def _pager(folder: str, n: int, pages: int, total: int, noun: str) -> str:
+    if pages <= 1:
+        return f'<p class="muted">{total:,} {noun} items.</p>'
+    links = " ".join(
+        (f"<b>{i}</b>" if i == n else f'<a href="{folder}/{i}.html">{i}</a>')
+        for i in range(1, pages + 1)
+    )
+    return (f'<p class="muted">Showing {(n-1)*PAGE_SIZE + 1:,}–{min(n*PAGE_SIZE, total):,} of {total:,} {noun} items. '
+            f"Pages: {links}</p>")
+
+
+def write_list_pages(view: Path, folder: str, title: str, rows: list, blurb: str, rowfn, headers, **rowkw) -> None:
+    out = view / folder
+    out.mkdir(parents=True, exist_ok=True)
+    pages = max(1, -(-len(rows) // PAGE_SIZE)) if rows else 1
+    keep = set()
+    heads = "".join(f"<th>{e(h)}</th>" for h in headers)
+    for n in range(1, pages + 1):
+        chunk = rows[(n - 1) * PAGE_SIZE:n * PAGE_SIZE]
+        # These files live inside folder/, so pager links are ./N.html.
+        nav = _pager(".", n, pages, len(rows), title.lower())
+        body = (
+            f'<h1>{e(title)} ({len(rows):,})</h1>'
+            f'<p class="sub">{e(blurb)} <a href="../#{folder}">← Archive Droid</a></p>'
+            f"{nav}"
+            f'<div class="panel"><div class="scroll"><table><tr>{heads}</tr>{rowfn(chunk, **rowkw)}</table></div></div>'
+            f"{nav}"
+        )
+        name = f"{n}.html"
+        keep.add(name)
+        atomic(out / name, page(f"Archive Droid {title} p.{n}", body))
+    for oldp in out.glob("*.html"):
+        if oldp.name not in keep:
+            oldp.unlink()
+
+
 def write_now(view: Path, d: dict) -> None:
     h, cap, svc = d.get("health") or {}, d.get("capacity") or {}, d.get("service") or {}
     cur = d.get("current") or {}
@@ -144,7 +221,9 @@ def write_now(view: Path, d: dict) -> None:
         ("Last verified capture", when(h.get("last_verified_progress_at"))),
         ("Captures today", f'{cap.get("daily_captures") or 0:,} / {cap.get("daily_captures_limit") or 0:,}'),
         ("Account slots free", e(cap.get("available"))),
-        ("Queue length", f'{d.get("queue_len", 0):,}'),
+        ("Waiting in queue", f'{d.get("queue_len", 0):,}'),
+        ("Problems", f'{len(d.get("problems") or []):,}'),
+        ("Verified captures", f'{len(d.get("completed") or []):,}'),
         ("Approved object IDs", f'{d.get("approved_ids", 0):,}'),
     ]
     tile_html = "".join(f'<div class="tile"><span>{e(k)}</span><b>{v}</b></div>' for k, v in tiles)
@@ -153,12 +232,18 @@ def write_now(view: Path, d: dict) -> None:
     warn_html = ("".join(f'<li class="warn">{e(w)}</li>' for w in warn) if warn else '<li class="okc">No threshold breached.</li>')
     stage_rows = "".join(f'<tr><td>{e(s)}</td><td>{stages.get(s, 0):,}</td><td class="muted">{e(desc)}</td></tr>'
                          for s, desc in core.STAGES) if stages else '<tr><td colspan=3 class="muted">Waiting for the first nightly sweep.</td></tr>'
-    # Queue
+    # Queue / Problems / Completed
     q = d.get("queue") or []
-    qrows = "".join(
-        f'<tr class="{"cur" if r.get("current") else ""}"><td>{r["pos"]:,}</td><td>{safe_link(r["url"])}</td>'
-        f'<td>{tlink(r.get("ticket"))}</td><td>{e(r.get("stage"))}</td></tr>' for r in q[:1000])
-    more = f'<p class="muted">Showing the first 1,000 of {len(q):,} rows.</p>' if len(q) > 1000 else ""
+    problems = d.get("problems") or []
+    completed = d.get("completed") or []
+    qrows = _waiting_rows(q[:1000])
+    more = f'<p class="muted">Showing the first 1,000 of {len(q):,} waiting rows.</p>' if len(q) > 1000 else ""
+    prows = _waiting_rows(problems[:PAGE_SIZE], problems=True)
+    p_pages = max(1, -(-len(problems) // PAGE_SIZE)) if problems else 1
+    pmore = _pager("problems", 1, p_pages, len(problems), "problem") if len(problems) > PAGE_SIZE else ""
+    crows = _completed_rows(completed[:PAGE_SIZE])
+    c_pages = max(1, -(-len(completed) // PAGE_SIZE)) if completed else 1
+    cmore = _pager("completed", 1, c_pages, len(completed), "verified") if len(completed) > PAGE_SIZE else ""
     # Approvals
     log = sorted(d.get("approvals_log") or [], key=lambda x: x.get("at") or "", reverse=True)
     arows = "".join(
@@ -178,20 +263,31 @@ def write_now(view: Path, d: dict) -> None:
 <h1>Archive Droid</h1>
 <p class="sub">Unlisted, read-only. Generated {when(d.get("generated_at"))}; this page reloads every 5 minutes.
 Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)}. <a href="/admin/operations/">← Operations overview</a></p>
-<nav><a href="#now">Now</a><a href="#queue">Queue</a><a href="#approved">Recently approved</a><a href="#missing">Missing a Wayback link</a></nav>
+<nav><a href="#now">Now</a><a href="#queue">Queue</a><a href="#problems">Problems</a><a href="#completed">Completed</a><a href="#approved">Recently approved</a><a href="#missing">Missing a Wayback link</a></nav>
 <section class="panel" id="now"><h2>Now</h2><div class="grid">{tile_html}</div>
 <h3>Current or last item</h3>{cur_html}
 <h3>Why it is waiting</h3><ul>{"".join(f"<li>{w}</li>" for w in waiting) or "<li>Nothing is waiting.</li>"}</ul>
 <h3>Stall checks</h3><ul>{warn_html}</ul>
 <h3>Every wiki file, by stage</h3><table><tr><th>Stage</th><th>Files</th><th>Meaning</th></tr>{stage_rows}</table></section>
-<section class="panel" id="queue"><h2>Queue ({len(q):,})</h2><p class="muted">queue.txt order. ▶ marks the item the worker most recently submitted or checked. Stage is the done.json status ("new" = not tried yet).</p>
-<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th></tr>{qrows}</table></div>{more}</section>
+<section class="panel" id="queue"><h2>Queue ({len(q):,})</h2><p class="muted">Still waiting, in worker queue order (new, submitted, ok, unverified). Verified items are in <a href="#completed">Completed</a>; failed and retry are in <a href="#problems">Problems</a>. ▶ marks the item the worker most recently submitted or checked. Dates come from the registry (date queued) and done.json (last tried); "unknown" means no date was recorded. Times are UTC-4.</p>
+<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added or queued</th><th>Last tried</th></tr>{qrows}</table></div>{more}</section>
+<section class="panel" id="problems"><h2>Problems ({len(problems):,})</h2><p class="muted">Failed and retry items. Queue-order first, then any that have left queue.txt. Last tried is done.json <code>last</code>.</p>
+<div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added or queued</th><th>Last tried</th></tr>{prows}</table></div>{pmore}</section>
+<section class="panel" id="completed"><h2 id="verified">Completed / Verified ({len(completed):,})</h2><p class="muted">Newest verified capture first. Verified date is done.json <code>verify.at</code> (UTC-4). The Wayback column is the recorded capture URL; Preservation is whether linker.json has a File-page link for that capture. "unknown" means that fact was not recorded.</p>
+<div class="scroll"><table><tr><th>Verified date (UTC-4)</th><th>File or URL</th><th>Ticket</th><th>archive.org</th><th>Preservation link</th></tr>{crows}</table></div>{cmore}</section>
 <section class="panel" id="approved"><h2>Recently approved</h2><p class="muted">Append-only log. Past entries were rebuilt from approved-objects.json scopes, its dated backups and their file times. New changes are recorded by a hook when the file changes. The log never edits what is approved.</p>
 <div class="scroll"><table><tr><th>When</th><th>Ticket</th><th>Change</th><th>Total after</th><th>Source</th><th>Reason</th></tr>{arows}</table></div></section>
 <section class="panel" id="missing"><h2>Missing a Wayback link</h2><p class="muted">Every wiki file without a verified copy and Preservation link, plus registered snapshots not yet verified, grouped by originating ticket. Rebuilt nightly; generated {when(groups.get("generated_at"))}.</p>
 <table><tr><th>Ticket</th><th>Items</th></tr>{mrows}</table></section>
 """
     atomic(view / "index.html", page("Archive Droid", body, refresh=300))
+    write_list_pages(view, "problems", "Problems", problems,
+                     "Failed and retry items. Queue-order first, then any that have left queue.txt.",
+                     _waiting_rows, ("#", "File or URL", "Ticket", "Stage", "Date added or queued", "Last tried"),
+                     problems=True)
+    write_list_pages(view, "completed", "Completed / Verified", completed,
+                     "Newest verified capture first. Verified date is done.json verify.at (UTC-4).",
+                     _completed_rows, ("Verified date (UTC-4)", "File or URL", "Ticket", "archive.org", "Preservation link"))
 
 
 def _thumb(it) -> str:

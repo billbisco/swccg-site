@@ -112,6 +112,79 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("rejected_credential", html)
         self.assertNotIn("billbisco", html.lower())
 
+    def test_waiting_and_completed_tables(self):
+        from operations.archive_droid import collect, render
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state, repo, work, view = root / "state", root / "repo", root / "work", root / "view"
+        (repo / "ops/wayback").mkdir(parents=True)
+        (state / "registry/promotions").mkdir(parents=True)
+        (work).mkdir(parents=True)
+        (view).mkdir(parents=True)
+        (repo / "ops/wayback/queue.txt").write_text(
+            "https://swccg.com/wiki/images/a/aa/Waiting.png\n"
+            "https://swccg.com/wiki/images/b/bb/Verified.png\n"
+            "https://swccg.com/wiki/images/c/cc/Failed.png\n"
+            "https://swccg.com/wiki/images/d/dd/Pending.png\n"
+        )
+        (repo / "ops/wayback/done.json").write_text(json.dumps({
+            "https://swccg.com/wiki/images/a/aa/Waiting.png": {"status": "ok", "last": "2026-11-20T12:00:00Z", "capture": ""},
+            "https://swccg.com/wiki/images/b/bb/Verified.png": {
+                "status": "verified", "last": "2026-11-25T10:00:00Z",
+                "capture": "https://web.archive.org/web/20261125100000/https://swccg.com/wiki/images/b/bb/Verified.png",
+                "verify": {"at": "2026-11-25T18:00:00Z"}},
+            "https://swccg.com/wiki/images/c/cc/Failed.png": {"status": "failed", "last": "2026-11-21T08:00:00Z", "capture": "", "error": "x"},
+            "https://swccg.com/wiki/images/d/dd/Pending.png": {"status": "pending", "last": "2026-11-22T09:00:00Z", "job_id": "spn2-x"},
+            "https://swccg.com/wiki/images/e/ee/OldVerified.png": {
+                "status": "verified", "last": "2026-11-01T00:00:00Z",
+                "capture": "https://web.archive.org/web/20261101000000/https://swccg.com/wiki/images/e/ee/OldVerified.png"},
+        }))
+        (state / "registry/promotions/aa.json").write_text(json.dumps({
+            "source_url": "https://swccg.com/wiki/images/a/aa/Waiting.png",
+            "queued_at": "2026-11-19T15:00:00+00:00"}))
+        (state / "linker.json").write_text(json.dumps({
+            "File:Verified.png|https://web.archive.org/web/20261125100000/https://swccg.com/wiki/images/b/bb/Verified.png": "already"}))
+        (work / "sweep-index.json").write_text(json.dumps({"tickets": {
+            core.norm_url("https://swccg.com/wiki/images/a/aa/Waiting.png"): 1310,
+            core.norm_url("https://swccg.com/wiki/images/b/bb/Verified.png"): 1310}}))
+        args = mock.Mock(state=state, repo=repo, work=work, view=view)
+        paths = collect.Paths(args)
+        data = collect.build_now(paths)
+        self.assertEqual([r["stage"] for r in data["queue"]], ["ok", "submitted"])
+        self.assertEqual([r["stage"] for r in data["problems"]], ["failed"])
+        self.assertEqual(len(data["completed"]), 2)
+        self.assertEqual(data["completed"][0]["verified_at"], "2026-11-25T18:00:00Z")  # newest first
+        self.assertIsNone(data["completed"][1]["verified_at"])  # no verify.at -> unknown, not last
+        self.assertEqual(data["completed"][0]["preservation"], "yes")
+        self.assertEqual(data["completed"][1]["preservation"], "unknown")
+        self.assertEqual(data["queue"][0]["queued_at"], "2026-11-19T15:00:00+00:00")
+        self.assertIsNone(data["queue"][1].get("queued_at"))
+        render.write_now(view, data)
+        html = (view / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="queue"', html)
+        self.assertIn('id="problems"', html)
+        self.assertIn('id="completed"', html)
+        self.assertIn('id="verified"', html)
+        self.assertIn("Queue (2)", html)
+        self.assertIn("Problems (1)", html)
+        self.assertIn("Completed / Verified (2)", html)
+        self.assertIn("Waiting.png", html)
+        self.assertIn("Pending.png", html)
+        self.assertNotIn("Failed.png", html[html.find('id="queue"'):html.find('id="problems"')])  # not in waiting table
+        self.assertIn("Failed.png", html[html.find('id="problems"'):html.find('id="completed"')])
+        # Verified.png belongs in completed, not the waiting queue
+        qsec = html[html.find('id="queue"'):html.find('id="problems"')]
+        self.assertNotIn("Verified.png", qsec)
+        self.assertIn("Verified.png", html[html.find('id="completed"'):])
+        self.assertIn("unknown", html)  # date or preservation gaps
+        self.assertIn("Wayback", html)
+        self.assertIn("19 Nov 2026", html)  # queued_at 15:00 UTC -> 11:00 UTC-4
+        self.assertTrue((view / "completed/1.html").exists())
+        self.assertNotIn("web.archive.org/web/20261101000000", render.when_known(None))
+        self.assertEqual(render.when_known(None), "unknown")
+        self.assertEqual(render.when_known(""), "unknown")
+
     def test_private_repo_urls_are_redacted(self):
         from operations.archive_droid import render
         private = "https://github.com/billbisco/ai-team-skills/blob/abc/shared/RULINGS.md"
