@@ -1,6 +1,6 @@
-# Archive Droid staff page (swccg-guild/work#1360)
+# Archive Droid page (swccg-guild/work#1360)
 
-Staff-only page at `https://swccg.com/admin/operations/archive-droid/`, behind the same strict staff check as `/admin/operations/`. The overview links to it and stays aggregate-only. Only this page lists items.
+Unlisted, read-only page at `https://swccg.com/admin/operations/archive-droid/`. Anyone with the URL may view it (Bill, 2026-11-25). It is not linked from any public page; the staff-gated Operations overview may keep its link. Pages send `X-Robots-Tag: noindex, nofollow` and a matching meta robots tag. Do not add the path to `robots.txt` (a Disallow would advertise it). POST and other write methods are denied. Only this page lists items; the overview stays aggregate-only.
 
 | Unit | Schedule | What it does |
 |---|---|---|

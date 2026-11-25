@@ -1,4 +1,4 @@
-"""Static, script-free HTML for the staff-only Archive Droid page."""
+"""Static, script-free HTML for the unlisted, read-only Archive Droid page."""
 from __future__ import annotations
 
 import html
@@ -61,6 +61,7 @@ def page(title: str, body: str, *, refresh: int | None = None) -> str:
     meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">{meta}'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<meta name="robots" content="noindex, nofollow">'
             f'<meta name="referrer" content="no-referrer"><title>{e(title)}</title>'
             f'<style>{CSS}</style></head><body><main>{body}</main></body></html>')
 
@@ -157,7 +158,7 @@ def write_now(view: Path, d: dict) -> None:
         for g, n in groups.get("groups", {}).items()) or '<tr><td colspan=2 class="muted">Waiting for the first nightly sweep.</td></tr>'
     body = f"""
 <h1>Archive Droid</h1>
-<p class="sub">Staff only. Generated {when(d.get("generated_at"))}; this page reloads every 5 minutes.
+<p class="sub">Unlisted, read-only. Generated {when(d.get("generated_at"))}; this page reloads every 5 minutes.
 Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)}. <a href="/admin/operations/">← Operations overview</a></p>
 <nav><a href="#now">Now</a><a href="#queue">Queue</a><a href="#approved">Recently approved</a><a href="#missing">Missing a Wayback link</a></nav>
 <section class="panel" id="now"><h2>Now</h2><div class="grid">{tile_html}</div>

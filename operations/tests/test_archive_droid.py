@@ -78,5 +78,40 @@ class HookTests(unittest.TestCase):
         self.assertNotEqual(before, after)
 
 
+class RenderTests(unittest.TestCase):
+    def test_pages_are_noindex(self):
+        from operations.archive_droid import render
+        html = render.page("Archive Droid", "<p>ok</p>", refresh=300)
+        self.assertIn('<meta name="robots" content="noindex, nofollow">', html)
+        self.assertNotIn("rejected_credential", html)
+
+    def test_write_now_is_unlisted_and_has_four_blocks(self):
+        from operations.archive_droid import render
+        view = Path(self.tmp.name) if hasattr(self, "tmp") else None
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        view = Path(tmp.name)
+        render.write_now(view, {
+            "generated_at": "2026-11-25T18:00:00+00:00",
+            "health": {"mode": "healthy", "reason": "account capacity unavailable"},
+            "capacity": {"available": 3, "daily_captures": 1, "daily_captures_limit": 30000},
+            "service": {}, "timer": {},
+            "queue": [{"pos": 1, "url": "https://swccg.com/wiki/File:Example.png", "ticket": 1310, "stage": "verified", "current": True}],
+            "queue_len": 1,
+            "approvals_log": [{"at": "2026-11-25T16:53:29+00:00", "ticket": 1339, "change": "added", "count": 1, "total_after": 1711, "source": "backfill", "reason": "approved capturing Route-C snapshots"}],
+            "stages": {"linked": 1, "held": 2},
+            "warnings": [],
+        })
+        html = (view / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<meta name="robots" content="noindex, nofollow">', html)
+        self.assertIn('id="now"', html)
+        self.assertIn('id="queue"', html)
+        self.assertIn('id="approved"', html)
+        self.assertIn('id="missing"', html)
+        self.assertIn("Unlisted, read-only", html)
+        self.assertNotIn("rejected_credential", html)
+        self.assertNotIn("billbisco", html.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
