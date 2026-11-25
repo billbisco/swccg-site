@@ -112,6 +112,20 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("rejected_credential", html)
         self.assertNotIn("billbisco", html.lower())
 
+    def test_private_repo_urls_are_redacted(self):
+        from operations.archive_droid import render
+        private = "https://github.com/billbisco/ai-team-skills/blob/abc/shared/RULINGS.md"
+        raw = "https://raw.githubusercontent.com/billbisco/swccg-cardmaker/abc/assets/x.png"
+        public = "https://github.com/swccg-guild/work/issues/1360"
+        self.assertEqual(render.safe_link(private), '<span class="muted">private source</span>')
+        self.assertEqual(render.safe_link(raw, "x.png"), '<span class="muted">private source</span>')
+        self.assertIn('href="https://github.com/swccg-guild/work/issues/1360"', render.safe_link(public))
+        self.assertNotIn("billbisco", render.safe_link(private))
+        self.assertNotIn("ai-team-skills", render.safe_link(private))
+        html = render.page("t", "<p>" + render.safe_link(private) + render.safe_link(public) + "</p>")
+        self.assertNotIn("billbisco", html)
+        self.assertNotIn("ai-team-skills", html)
+
 
 if __name__ == "__main__":
     unittest.main()
