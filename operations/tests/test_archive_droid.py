@@ -157,7 +157,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(data["completed"][0]["verified_at"], "2026-11-25T18:00:00Z")  # newest first
         self.assertIsNone(data["completed"][1]["verified_at"])  # no verify.at -> unknown, not last
         self.assertEqual(data["completed"][0]["preservation"], "yes")
-        self.assertEqual(data["completed"][1]["preservation"], "unknown")
+        self.assertEqual(data["completed"][1]["preservation"], "not yet")  # File page, link still due
         self.assertEqual(data["queue"][0]["added_at"], "2026-11-19T15:00:00+00:00")
         self.assertEqual(data["queue"][0]["added_source"], "registry")
         self.assertEqual(data["queue"][0]["added_field"], "queued_at")
@@ -201,6 +201,67 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(render.when_known(None), "unknown")
         self.assertEqual(render.when_known(""), "unknown")
 
+
+    def test_item_copy_keys_and_link_kinds(self):
+        self.assertEqual(core.ia_key("swccg-wiki-images-a", "af/X y.png"),
+                         core.norm_url("https://swccg.com/wiki/images/a/af/X_y.png"))
+        self.assertEqual(core.ia_key("swccg-wiki-images-archive", "0/00/20201010!A.png"),
+                         core.norm_url("https://swccg.com/wiki/images/archive/0/00/20201010!A.png"))
+        self.assertEqual(core.ia_key("swccg-com-snapshots", "forum/p1.html"), "url:swccg.com/snapshots/forum/p1.html")
+        self.assertIsNone(core.ia_key("other", "x"))
+        self.assertEqual(core.link_kind("https://swccg.com/wiki/images/a/af/X.png"), "file")
+        self.assertIsNone(core.link_kind("https://swccg.com/wiki/images/archive/a/af/1!X.png"))
+        self.assertEqual(core.link_kind("https://swccg.com/snapshots/forum/p123.html"), "snapshot")
+        self.assertIsNone(core.link_kind("https://swccg.com/wiki/Some_Page"))
+
+    def test_speed_items_and_hold_blocks(self):
+        from operations.archive_droid import collect, render
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state, repo, work, view = root / "wb", root / "repo", root / "work", root / "view"
+        for d in (repo / "ops/wayback", state / "registry", work, view, root / "swccg-ia-items"):
+            d.mkdir(parents=True)
+        (repo / "ops/wayback/queue.txt").write_text("")
+        (repo / "ops/wayback/done.json").write_text(json.dumps({
+            "https://swccg.com/wiki/Some_Page": {"status": "verified", "capture": "https://web.archive.org/web/1/x",
+                                                 "verify": {"at": "2026-11-26T10:00:00Z"}},
+            "https://swccg.com/wiki/images/a/af/Linked.png": {"status": "verified", "capture": "https://web.archive.org/web/2/y",
+                                                               "verify": {"at": "2026-11-26T09:00:00Z"}}}))
+        (state / "linker.json").write_text(json.dumps({"ia|File:Linked.png": "linked"}))
+        (state / "registry/policy-unapproved.json").write_text(json.dumps(
+            {"checked_at": "2026-11-26T15:00:00+00:00", "counts": {"held": 491, "approve": 10}, "no_ticket": 0}))
+        (state / "pace-state.json").write_text(json.dumps({
+            "allowance": 14, "gap_s": 45, "bounds": {"min": 3, "max": 40, "gap_min_s": 20},
+            "last_run": {"submits": 12, "refusals": 0, "rate_limited": False, "used_full_allowance": True,
+                         "ended": "2026-11-26T15:10:00+00:00"},
+            "reason": "clean run used its whole allowance: +2",
+            "promotion": {"target_buffer": 300, "buffer_before": 40, "promoted": 120, "cap": 200, "seconds": 61}}))
+        (state / "pace-log.jsonl").write_text(json.dumps({"at": "2026-11-26T15:10:00+00:00", "from": 12, "to": 14,
+                                                          "gap_from": 60, "gap_to": 45, "reason": "clean run"}) + "\n")
+        (root / "swccg-ia-items/ledger.json").write_text(json.dumps({
+            "swccg-wiki-images-a/af/Linked.png": {"item": "swccg-wiki-images-a", "name": "af/Linked.png", "verified": "2026-11-25T00:00:00Z"},
+            "swccg-com-snapshots/forum/p1.html": {"item": "swccg-com-snapshots", "name": "forum/p1.html"}}))
+        data = collect.build_now(collect.Paths(mock.Mock(state=state, repo=repo, work=work, view=view)))
+        self.assertEqual(data["hold_marked"], 491)
+        self.assertEqual(data["ia"]["uploaded"], 2)
+        self.assertEqual(data["ia"]["verified"], 1)
+        pres = {r["url"]: r["preservation"] for r in data["completed"]}
+        self.assertEqual(pres["https://swccg.com/wiki/images/a/af/Linked.png"], "yes")
+        self.assertTrue(pres["https://swccg.com/wiki/Some_Page"].startswith("not needed"))
+        render.write_now(view, data)
+        html = (view / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Archive Droid sets its own speed", html)
+        self.assertIn("clean run used its whole allowance", html)
+        self.assertIn("Recent pace changes", html)
+        self.assertIn("491 registry objects still carry the 14 Nov 2026 hold stamp", html)
+        self.assertIn("Archive.org item copies", html)
+        self.assertNotIn("promotes 2 per run", html)
+        self.assertNotIn("1358</a> decides", html)
+        self.assertNotIn("at most two approved jobs", html)
+        data["speed"] = None
+        render.write_now(view, data)
+        self.assertIn("Self-tuning starts with the next worker run", (view / "index.html").read_text(encoding="utf-8"))
 
     def test_first_seen_log_is_append_only_and_ignores_upload_timestamp(self):
         from operations.archive_droid import collect, render
