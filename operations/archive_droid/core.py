@@ -17,7 +17,7 @@ STAGES = (
     ("queued", "In queue.txt or submitted, not verified yet"),
     ("approved-not-queued", "Approved, waiting to be promoted into the queue"),
     ("ready-unapproved", "Ready, not approved yet (no ticket number, or the hourly auto-approval has not run)"),
-    ("held", "Still stamped with the 14 Nov 2026 hold (#1358 decides)"),
+    ("held", "Kept out of the 26 Nov 2026 hold release on purpose (duplicate bytes or file gone; #1375)"),
     ("not-ready", "Registered, not ready for another reason"),
     ("unregistered", "On the wiki, no preservation registry entry"),
 )
@@ -37,6 +37,40 @@ LINK_BAD = frozenset({"error", "missing", "no-anchor", "dry", "todo", "skip", "s
 _IMG = re.compile(r"/(?:wiki/)?images/((?:archive/)?[0-9a-f]/[0-9a-f]{2}/.+)$")
 _FILE = re.compile(r"/(?:wiki/|index\.php\?title=)(?:File|Image):(.+)$", re.I)
 _TICKET = re.compile(r"(\d{1,6})\s*$")
+_FORUM_SNAP = re.compile(r"/snapshots/forum/[pt]\d+\.html$")
+
+
+def ia_key(item: str, name: str) -> str | None:
+    """norm_url key of a file stored in one of our archive.org items, or None.
+
+    swccg-wiki-images-<h> holds "<hh>/<Name>" = /wiki/images/<h>/<hh>/<Name>;
+    swccg-wiki-images-archive holds earlier versions (/wiki/images/archive/...);
+    swccg-com-snapshots holds /snapshots/<path>.
+    """
+    if not item or not name:
+        return None
+    if item == "swccg-wiki-images-archive":
+        return norm_url("https://swccg.com/wiki/images/archive/" + name)
+    if item.startswith("swccg-wiki-images-") and len(item) == len("swccg-wiki-images-") + 1:
+        return norm_url("https://swccg.com/wiki/images/" + item[-1] + "/" + name)
+    if item == "swccg-com-snapshots":
+        return norm_url("https://swccg.com/snapshots/" + name)
+    return None
+
+
+def ia_download_url(item: str, name: str) -> str:
+    return "https://archive.org/download/" + item + "/" + name
+
+
+def link_kind(url: str) -> str | None:
+    """Which wiki page a verified copy is linked from: "file" (original upload),
+    "snapshot" (forum snapshot cited on pages) or None (no page link for this kind)."""
+    k = norm_url(url)
+    if k.startswith("img:") and not k.startswith("img:archive/"):
+        return "file"
+    if _FORUM_SNAP.search(url or ""):
+        return "snapshot"
+    return None
 
 
 def norm_title(name: str) -> str:

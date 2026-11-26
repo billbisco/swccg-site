@@ -26,8 +26,9 @@ HOW_QUEUE = """
 <code class="cmd">python3 tools/preservation_enqueue.py REQUEST.json --registry /root/.local/state/swccg-wayback/registry</code>
 <p>The request must be <code>schema_version</code> 1 and include subject, source (<code>url</code>, <code>sha256</code>, <code>bytes</code>, and <code>checked_evidence</code>), readiness, owner, continuation, <code>approval_scope</code> with the work <b>ticket number</b>, and <code>backup_receipt</code> (plus <code>source_backup_receipt</code> when the source and the page are different). Do not put credentials in the request. Field rules are in <code>ops/PRESERVATION-REGISTRATION.md</code> and in the swccg-wiki skill's <code>archiving.md</code>.</p>
 <p><b>What that command actually does.</b> It sends metadata to the server registration inbox only. It does not submit a capture, and it does not itself append a line to <code>queue.txt</code>. The receipt always says <code>submitted: false</code>. Unready items (missing backup, missing source proof, or an unready stage) stay in the registry and do not enter this queue.</p>
-<p><b>Approval and the back of the queue.</b> Approval is automatic (Bill, 25 Nov 2026). The worker auto-approves every registration that is ready (backup receipt and source proof in place) and carries a work ticket number, within about an hour. It records each approval with its date and ticket in <a href="#approved">Recently approved</a>. Ready items without a ticket stay unapproved and are flagged on this page. Items under the 14 Nov 2026 hold, or not yet ready, are not approved; <a href="https://github.com/swccg-guild/work/issues/1358">#1358</a> decides the held groups. AIs do not hand-write approvals or edit <code>approved-objects.json</code>. Each worker run promotes at most two approved jobs and, when they pass the public-byte checks, <b>appends their URLs to the back of queue.txt</b>. Existing lines are not reordered. After your story's items are registered with a ticket, that story's archiving step is done; Archive Droid and standing ticket <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a> own approval, promotion, saving, verification and linking.</p>
-<p><b>Save, verify, and Preservation links.</b> The worker then submits queued URLs to archive.org one at a time, confirms each job, and records the result in <code>done.json</code>. After a capture is <code>verified</code>, the linker adds a Preservation link on the matching wiki File page, or a Preserved copy on a citing page for snapshots.</p>
+<p><b>Approval and the back of the queue.</b> Approval is automatic (Bill, 25 Nov 2026). The worker auto-approves every registration that is ready (backup receipt and source proof in place) and carries a work ticket number, within about an hour. It records each approval with its date and ticket in <a href="#approved">Recently approved</a>. Ready items without a ticket stay unapproved and are flagged on this page. The stale 14 Nov 2026 hold stamp was released on 26 Nov 2026 (<a href="https://github.com/swccg-guild/work/issues/1375">#1375</a>); only exact-byte duplicates and files gone from the wiki were kept out. Items not yet ready are not approved. AIs do not hand-write approvals or edit <code>approved-objects.json</code>. Each worker run <b>sizes its own promotion</b>: it promotes enough approved jobs to keep a few hours of fresh work in the queue (see <a href="#speed">Speed</a>) and, when they pass the public-byte checks, <b>appends their URLs to the back of queue.txt</b> in one commit. Existing lines are not reordered. After your story's items are registered with a ticket, that story's archiving step is done; Archive Droid and standing ticket <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a> own approval, promotion, saving, verification and linking.</p>
+<p><b>Save, verify, and Preservation links.</b> The worker then submits queued URLs to archive.org one at a time, confirms each job, and records the result in <code>done.json</code>. It sets its own pace from archive.org's answers: faster after clean runs, slower after refusals, 429s or cooldowns (it always honors Retry-After). Outside sources with no other copy (forum, res.starwarsccg.org, other sites) go before our own files that already have a verified archive.org item copy. After a capture is <code>verified</code>, the linker adds a Preservation link on the matching wiki File page, or a Preserved copy on a citing page for snapshots.</p>
+<p><b>Archive.org item copies count.</b> Our own files are also uploaded straight into our archive.org items (<code>swccg-wiki-images-0</code>…<code>-f</code>, <code>-archive</code>, <code>swccg-com-snapshots</code>). A file whose SHA-1, as archive.org reports it, matches ours is an archive.org backup, and the linker links that copy on its File page, so a File page does not wait for a Wayback capture (<a href="https://github.com/swccg-guild/work/issues/1375">#1375</a> D2).</p>
 <p><b>How to read Stage in this table:</b> <i>new</i> — in the queue, not yet tried; <i>submitted</i> — sent to archive.org, waiting; <i>ok</i> — a capture exists, verification still pending; <i>unverified</i> — a capture loaded but is not yet accepted as a match. Failed and retry items are in <a href="#problems">Problems</a>. Verified items are in <a href="#completed">Completed / Verified</a>.</p>
 <p><b>Do not:</b> edit <code>queue.txt</code> or <code>done.json</code> by hand; reorder the queue; make a direct archive.org save (including <code>web.archive.org/save</code>) outside this pipeline; write approvals by hand; register work without a ticket number.</p>
 <p>Details: <code>archiving.md</code> and <a href="https://github.com/swccg-guild/work/issues/1359">#1359</a>.</p>
@@ -240,23 +241,95 @@ def write_list_pages(view: Path, folder: str, title: str, rows: list, blurb: str
             oldp.unlink()
 
 
+def _num(v, fmt="{:,}") -> str:
+    if isinstance(v, bool) or v is None:
+        return "—"
+    if isinstance(v, (int, float)):
+        return e(fmt.format(v))
+    return e(v)
+
+
+def speed_html(d: dict) -> str:
+    """Archive Droid sets its own speed (#1375 D4): pace-state.json + pace-log.jsonl tail."""
+    sp = d.get("speed") if isinstance(d.get("speed"), dict) else None
+    if not sp:
+        return ('<p>Archive Droid sets its own speed (<a href="https://github.com/swccg-guild/work/issues/1375">#1375</a>). '
+                '<span class="muted">Self-tuning starts with the next worker run; no pace state recorded yet.</span></p>')
+    b = sp.get("bounds") if isinstance(sp.get("bounds"), dict) else {}
+    lr = sp.get("last_run") if isinstance(sp.get("last_run"), dict) else {}
+    pr = sp.get("promotion") if isinstance(sp.get("promotion"), dict) else {}
+    tiles = [
+        ("Submits allowed per run", f'{_num(sp.get("allowance"))} <span class="muted">(bounds {_num(b.get("min"))}–{_num(b.get("max"))})</span>'),
+        ("Gap between submits", f'{_num(sp.get("gap_s"), "{:g}")} s <span class="muted">(floor {_num(b.get("gap_min_s"), "{:g}")} s)</span>'),
+        ("Last run", f'{_num(lr.get("submits"))} submits, {_num(lr.get("refusals"))} refusals'
+                     f'{", rate-limited" if lr.get("rate_limited") else ""}'
+                     f'<span class="muted">{"; used its whole allowance" if lr.get("used_full_allowance") else ""}; ended {when(lr.get("ended"))}</span>'),
+        ("Promotion last run", f'{_num(pr.get("promoted"))} jobs <span class="muted">(buffer {_num(pr.get("buffer_before"))} → target {_num(pr.get("target_buffer"))}, cap {_num(pr.get("cap"))}, {_num(pr.get("seconds"), "{:.0f}")} s)</span>'),
+    ]
+    tile_html = "".join(f'<div class="tile"><span>{e(k)}</span><b>{v}</b></div>' for k, v in tiles)
+    log = list(reversed(d.get("speed_log") or []))
+    lrows = "".join(
+        f'<tr><td>{when(x.get("at"))}</td><td>{_num(x.get("from"))} → {_num(x.get("to"))}</td>'
+        f'<td>{_num(x.get("gap_from"), "{:g}")} s → {_num(x.get("gap_to"), "{:g}")} s</td><td class="muted">{e(x.get("reason"))}</td></tr>'
+        for x in log if isinstance(x, dict)) or '<tr><td colspan=4 class="muted">No pace change yet.</td></tr>'
+    return (f'<p>Archive Droid sets its own speed (<a href="https://github.com/swccg-guild/work/issues/1375">#1375</a>): '
+            f'it raises the allowance after clean runs and backs off on refusals, 429s and cooldowns. '
+            f'Why it is at this pace now: <b>{e(sp.get("reason") or "—")}</b> <span class="muted">(updated {when(sp.get("updated_at") or lr.get("ended"))})</span></p>'
+            f'<div class="grid">{tile_html}</div>'
+            f'<h3>Recent pace changes</h3><table><tr><th>When</th><th>Submits per run</th><th>Gap</th><th>Why</th></tr>{lrows}</table>')
+
+
+def ia_html(d: dict) -> str:
+    ia = d.get("ia") if isinstance(d.get("ia"), dict) else {}
+    if not ia.get("available"):
+        return '<p class="muted">No archive.org item ledger found.</p>'
+    g = ia.get("groups") or {}
+    rows = "".join(f'<tr><td>{e(k)}</td><td>{_num(v[0])}</td><td>{_num(v[1])}</td></tr>'
+                   for k, v in g.items() if isinstance(v, list) and len(v) == 2)
+    links = ia.get("links") if isinstance(ia.get("links"), dict) else None
+    if links:
+        lk = (f'<p>File pages linked to their item copy: <b>{_num(links.get("linked"))}</b> '
+              f'<span class="muted">(verified current wiki files {_num(links.get("ia_verified_current"))}, still to link {_num(links.get("todo"))}, '
+              f'skipped because the SHA-1 differs {_num(links.get("skipped_sha_mismatch"))}, edits last run {_num(links.get("last_run_edits"))})</span></p>')
+    else:
+        lk = '<p class="muted">File-page links to item copies start once the linker update is deployed (#1375 D2).</p>'
+    return (f'<p>Our own files uploaded straight into archive.org items: <b>{_num(ia.get("uploaded"))}</b>, '
+            f'of which <b>{_num(ia.get("verified"))}</b> have the SHA-1 archive.org reports matching ours. These count as the archive.org backup.</p>'
+            f'<table><tr><th>Item group</th><th>Uploaded</th><th>SHA-1 verified</th></tr>{rows}</table>{lk}')
+
+
 def write_now(view: Path, d: dict) -> None:
     h, cap, svc = d.get("health") or {}, d.get("capacity") or {}, d.get("service") or {}
     cur = d.get("current") or {}
     stages = d.get("stages") or {}
     warn = d.get("warnings") or []
     waiting = []
+    speed = d.get("speed") if isinstance(d.get("speed"), dict) else None
+    promo = (speed or {}).get("promotion") if isinstance((speed or {}).get("promotion"), dict) else None
     if h.get("reason"):
-        waiting.append(f"Worker: {e(h['reason'])}")
+        why = f"Worker: {e(h['reason'])}"
+        if h.get("reason") == "account capacity unavailable":
+            ev = h.get("provider_event")
+            why += (f" — at its last check ({when(h.get('checked_at'))}) the worker got no capacity answer from archive.org"
+                    + (f" (<code>{e(ev)}</code>)" if ev else "") + ", so it waits. The free slots tile is archive.org's last real answer, "
+                    f"from {when(h.get('capacity_checked_at'))}.")
+        waiting.append(why)
     anq = stages.get("approved-not-queued")
     if anq:
-        waiting.append(f"{anq:,} approved files are waiting to be promoted (the worker promotes 2 per run).")
+        if promo:
+            waiting.append(f"{anq:,} approved files are waiting to be promoted. Last run promoted {int(promo.get('promoted') or 0):,} "
+                           f"(queue buffer {int(promo.get('buffer_before') or 0):,} fresh items, target {int(promo.get('target_buffer') or 0):,}, "
+                           f"cap {int(promo.get('cap') or 0):,} per run).")
+        else:
+            waiting.append(f"{anq:,} approved files are waiting to be promoted. The worker sizes promotion itself; "
+                           "self-tuning starts with the next worker run.")
     ru = stages.get("ready-unapproved")
     if ru:
         waiting.append(f"{ru:,} ready files are not approved yet. The worker auto-approves ready items that have a ticket number; the rest need one.")
-    held = stages.get("held")
-    if held:
-        waiting.append(f'{held:,} files still carry the 14 Nov hold stamp ({tlink(1358)} decides).')
+    hm = d.get("hold_marked")
+    if isinstance(hm, int):
+        waiting.append(f'{hm:,} registry objects still carry the 14 Nov 2026 hold stamp (policy scan {when(d.get("policy_checked_at"))}). '
+                       f'The stamp was released on 26 Nov ({tlink(1375)}); 491 were kept out on purpose: 488 exact-byte duplicates and 3 files gone from the wiki.')
     tiles = [
         ("Health", e(h.get("mode") or "unknown")),
         ("Last run started", _sys_when(svc.get("ExecMainStartTimestamp"))),
@@ -265,7 +338,7 @@ def write_now(view: Path, d: dict) -> None:
         ("Next submission eligible", when(d.get("next_submission_at") or h.get("next_eligible_attempt_at"))),
         ("Last verified capture", when(h.get("last_verified_progress_at"))),
         ("Captures today", f'{cap.get("daily_captures") or 0:,} / {cap.get("daily_captures_limit") or 0:,}'),
-        ("Account slots free", e(cap.get("available"))),
+        ("Account slots free", e(cap.get("available")) + f' <span class="muted">as of {when(h.get("capacity_checked_at"))}</span>'),
         ("Waiting in queue", f'{d.get("queue_len", 0):,}'),
         ("Problems", f'{len(d.get("problems") or []):,}'),
         ("Verified captures", f'{len(d.get("completed") or []):,}'),
@@ -273,10 +346,12 @@ def write_now(view: Path, d: dict) -> None:
     ]
     tile_html = "".join(f'<div class="tile"><span>{e(k)}</span><b>{v}</b></div>' for k, v in tiles)
     cur_html = (f'<p><b>{e(cur.get("event"))}</b> {safe_link(cur.get("url"))} at {when(cur.get("at"))}</p>'
-                if cur else '<p class="muted">No recent item in the worker journal.</p>')
+                if cur else '<p class="muted">Between items: no save or check line in the recent worker journal.</p>')
     warn_html = ("".join(f'<li class="warn">{e(w)}</li>' for w in warn) if warn else '<li class="okc">No threshold breached.</li>')
-    stage_rows = "".join(f'<tr><td>{e(s)}</td><td>{stages.get(s, 0):,}</td><td class="muted">{e(desc)}</td></tr>'
-                         for s, desc in core.STAGES) if stages else '<tr><td colspan=3 class="muted">Waiting for the first nightly sweep.</td></tr>'
+    iab = d.get("ia_by_stage") or {}
+    stage_rows = "".join(f'<tr><td>{e(s)}</td><td>{stages.get(s, 0):,}</td>'
+                         f'<td>{(f"{iab[s]:,}" if isinstance(iab.get(s), int) else "—")}</td><td class="muted">{e(desc)}</td></tr>'
+                         for s, desc in core.STAGES) if stages else '<tr><td colspan=4 class="muted">Waiting for the first nightly sweep.</td></tr>'
     # Queue / Problems / Completed
     q = d.get("queue") or []
     problems = d.get("problems") or []
@@ -310,17 +385,20 @@ def write_now(view: Path, d: dict) -> None:
 Nightly sweep: {when(d.get("sweep_generated_at"))}. Standing ticket {tlink(1359)}. <a href="/admin/operations/">← Operations overview</a></p>
 <nav><a href="#now">Now</a><a href="#queue">Queue</a><a href="#problems">Problems</a><a href="#completed">Completed</a><a href="#approved">Recently approved</a><a href="#missing">Missing a Wayback link</a></nav>
 <section class="panel" id="now"><h2>Now</h2><div class="grid">{tile_html}</div>
+<h3 id="speed">Speed</h3>{speed_html(d)}
+<h3 id="items">Archive.org item copies</h3>{ia_html(d)}
 <h3>Current or last item</h3>{cur_html}
 <h3>Why it is waiting</h3><ul>{"".join(f"<li>{w}</li>" for w in waiting) or "<li>Nothing is waiting.</li>"}</ul>
 <h3>Stall checks</h3><ul>{warn_html}</ul>
-<h3>Every wiki file, by stage</h3><table><tr><th>Stage</th><th>Files</th><th>Meaning</th></tr>{stage_rows}</table></section>
+<h3>Every wiki file, by stage</h3><table><tr><th>Stage</th><th>Files</th><th>With a verified item copy</th><th>Meaning</th></tr>{stage_rows}</table>
+<p class="muted">"With a verified item copy": files in that stage whose current version is already SHA-1 verified in our archive.org items (from the nightly sweep).</p></section>
 <section class="panel" id="queue"><h2>Queue ({len(q):,})</h2>
 {HOW_QUEUE}
 <p class="muted">Still waiting, in worker queue order (new, submitted, ok, unverified). Verified items are in <a href="#completed">Completed</a>; failed and retry are in <a href="#problems">Problems</a>. ▶ marks the item the worker most recently submitted or checked. <b>Date added</b> is First seen by page: the first time this page's 5-minute collector recorded the item. The earliest first-seen records start today. Items already in the queue then are marked <i>on or before</i> that time, unless a real registry time (registered_at or request time) exists. The source of each date is shown; dates are never invented. Last tried is done.json <code>last</code>. Times are UTC-4.</p>
 <div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{qrows}</table></div>{more}</section>
 <section class="panel" id="problems"><h2>Problems ({len(problems):,})</h2><p class="muted">Failed and retry items. Queue-order first, then any that have left queue.txt. Date added is First seen by page, with the same sources as the Queue table. Last tried is done.json <code>last</code>.</p>
 <div class="scroll"><table><tr><th>#</th><th>File or URL</th><th>Ticket</th><th>Stage</th><th>Date added</th><th>Last tried</th></tr>{prows}</table></div>{pmore}</section>
-<section class="panel" id="completed"><h2 id="verified">Completed / Verified ({len(completed):,})</h2><p class="muted">Newest verified capture first. Verified date is done.json <code>verify.at</code> (UTC-4). The Wayback column is the recorded capture URL; Preservation is whether linker.json has a File-page link for that capture. "unknown" means that fact was not recorded.</p>
+<section class="panel" id="completed"><h2 id="verified">Completed / Verified ({len(completed):,})</h2><p class="muted">Newest verified capture first. Verified date is done.json <code>verify.at</code> (UTC-4). The Wayback column is the recorded capture URL; Preservation link: <i>yes</i> when the linker recorded a link on the File page (Wayback or item copy) or on the citing pages for a forum snapshot; <i>not yet</i> when one is still due; <i>not needed</i> for kinds that have no File page (wiki pages, outside documents).</p>
 <div class="scroll"><table><tr><th>Verified date (UTC-4)</th><th>File or URL</th><th>Ticket</th><th>archive.org</th><th>Preservation link</th></tr>{crows}</table></div>{cmore}</section>
 <section class="panel" id="approved"><h2>Recently approved</h2><p class="muted">Append-only log. Operator approvals come from approved-objects.json (past entries rebuilt from its scopes, dated backups and file times; new changes recorded by a hook). Since 25 Nov 2026 the worker also auto-approves ready registrations that carry a work ticket number; those rows show Source "worker policy". This page never edits what is approved.</p>
 <div class="scroll"><table><tr><th>When</th><th>Ticket</th><th>Change</th><th>Total after</th><th>Source</th><th>Reason</th></tr>{arows}</table></div></section>

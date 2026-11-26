@@ -90,6 +90,10 @@ class Paths:
         self.index = self.work / "sweep-index.json"
         self.sweep = self.work / "sweep.json"
         self.now = self.work / "now.json"
+        self.pace_state = self.state / "pace-state.json"
+        self.pace_log = self.state / "pace-log.jsonl"
+        self.ia_links = self.state / "ia-links.json"
+        self.ia_ledger = self.state.parent / "swccg-ia-items" / "ledger.json"
 
 
 # --------------------------------------------------------------------------- approvals
@@ -246,20 +250,27 @@ def systemd_show(unit: str, props: str) -> dict:
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
-def last_submitted(limit: int = 600) -> dict:
-    """Latest SUBMITTED/VERIFY line of the worker (current or last item)."""
+def last_submitted(limit: int = 50) -> dict:
+    """Latest SUBMITTED/CONFIRM/VERIFY line of the worker (current or last item).
+
+    Filtered by journalctl --grep: a run prints thousands of cleanup lines
+    (KEEP-...), so the last plain 600 lines often held no item at all.
+    """
     try:
         out = subprocess.run(["journalctl", "-u", "swccg-wayback.service", "-n", str(limit),
+                              "--grep", r"^(SUBMITTED|CONFIRM \w+|VERIFY \w+) https?://",
                               "-o", "short-iso", "--no-pager"], capture_output=True, text=True,
                              timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     pat = re.compile(r"^(\S+) \S+ \S+: (SUBMITTED|CONFIRM \w+|VERIFY \w+) (https?://\S+)")
-    for line in reversed(out.splitlines()):
+    best = {}
+    # With --grep, journalctl's -n output order is not reliably oldest-first: take the newest stamp.
+    for line in out.splitlines():
         m = pat.match(line)
-        if m:
-            return {"at": m.group(1), "event": m.group(2), "url": m.group(3)}
-    return {}
+        if m and m.group(1) >= best.get("at", ""):
+            best = {"at": m.group(1), "event": m.group(2), "url": m.group(3)}
+    return best
 
 
 def done_index(done: dict) -> dict[str, dict]:
@@ -475,6 +486,77 @@ def linker_preservation(linker: dict) -> dict[str, str]:
     return out
 
 
+def linked_titles_from(linker: dict) -> set[str]:
+    """File titles the linker recorded a good Preservation edit for (Wayback or item copy)."""
+    out: set[str] = set()
+    for key, val in (linker or {}).items():
+        if not isinstance(key, str) or str(val) in core.LINK_BAD:
+            continue
+        parts = key.split("|")
+        title = parts[1] if parts[0] in ("ia", "item") and len(parts) > 1 else parts[0]
+        if title:
+            out.add(core.norm_title(title))
+    return out
+
+
+def file_title_of(url: str) -> str:
+    return core.norm_title(urllib.parse.unquote((url or "").rsplit("/", 1)[-1]))
+
+
+def preservation_of(url: str, cap: str, pres: dict, titles: set[str]) -> str:
+    kind = core.link_kind(url)
+    if kind is None:
+        return "not needed (no File page for this kind)"
+    if pres.get(cap) == "yes" or (kind == "file" and file_title_of(url) in titles):
+        return "yes"
+    return "not yet"
+
+
+def tail_jsonl(path: Path, n: int = 8, max_bytes: int = 65536) -> list[dict]:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines[-n:]:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def ia_summary(p: Paths) -> tuple[dict, set[str]]:
+    """Archive.org item coverage from the item-backup ledger (read once). Returns (summary, verified keys)."""
+    led = load_json(p.ia_ledger, {}) or {}
+    s = {"available": bool(led), "uploaded": 0, "verified": 0,
+         "groups": {"wiki images": [0, 0], "earlier versions": [0, 0], "snapshots": [0, 0]}}
+    keys: set[str] = set()
+    for row in led.values() if isinstance(led, dict) else ():
+        if not isinstance(row, dict):
+            continue
+        item, name = str(row.get("item") or ""), str(row.get("name") or "")
+        g = ("snapshots" if item == "swccg-com-snapshots" else
+             "earlier versions" if item.endswith("-archive") else "wiki images")
+        s["uploaded"] += 1
+        s["groups"][g][0] += 1
+        if row.get("verified"):
+            s["verified"] += 1
+            s["groups"][g][1] += 1
+            k = core.ia_key(item, name)
+            if k:
+                keys.add(k)
+    links = load_json(p.ia_links, None)
+    s["links"] = links if isinstance(links, dict) else None
+    return s, keys
+
+
 # --------------------------------------------------------------------------- now (5 min)
 def build_now(p: Paths) -> dict:
     now = utc_now()
@@ -493,7 +575,9 @@ def build_now(p: Paths) -> dict:
         queue = []
     cur = last_submitted()
     cur_key = core.norm_url(cur.get("url", ""))
-    pres = linker_preservation(load_json(p.linker, {}) or {})
+    linker_data = load_json(p.linker, {}) or {}
+    pres = linker_preservation(linker_data)
+    titles = linked_titles_from(linker_data)
     rows = []
     waiting, problems = [], []
     seen_problems: set[str] = set()
@@ -526,7 +610,7 @@ def build_now(p: Paths) -> dict:
         cap = d.get("capture") or ""
         completed.append({"url": d.get("url") or k, "ticket": tickets_by_url.get(k),
                           "verified_at": d.get("verified_at"), "capture": cap,
-                          "preservation": pres.get(cap) or "unknown",
+                          "preservation": preservation_of(d.get("url") or k, cap, pres, titles),
                           "current": bool(cur_key) and k == cur_key})
     completed.sort(key=lambda r: r.get("verified_at") or "", reverse=True)
     added_counts = stamp_first_seen(p, waiting + problems, now=now)
@@ -552,13 +636,21 @@ def build_now(p: Paths) -> dict:
         warnings.append(f"{no_ticket:,} ready registered items have no ticket number, so the worker "
                         f"did not auto-approve them (checked {flagged.get('checked_at') or 'unknown'}). "
                         "Re-register them with a work ticket number.")
+    pace = load_json(p.pace_state, None)
+    ia, _ia_keys = ia_summary(p)
+    counts = flagged.get("counts") if isinstance(flagged.get("counts"), dict) else {}
     return {
         "schema": 1,
         "generated_at": now.isoformat(timespec="seconds"),
+        "speed": pace if isinstance(pace, dict) else None,
+        "speed_log": tail_jsonl(p.pace_log, 6),
+        "ia": ia,
+        "hold_marked": counts.get("held") if isinstance(counts.get("held"), int) else None,
+        "policy_checked_at": flagged.get("checked_at"),
         "health": {k: health.get(k) for k in ("mode", "reason", "outcome", "checked_at",
                                               "last_submission_attempt_at", "last_verified_progress_at",
                                               "next_eligible_attempt_at", "oldest_pending_activity_at",
-                                              "provider_event")},
+                                              "provider_event", "capacity_checked_at")},
         "next_submission_at": iso(control.get("next_submission_at")) if isinstance(control.get("next_submission_at"), (int, float)) else None,
         "capacity": {k: cap.get(k) for k in ("available", "processing", "daily_captures", "daily_captures_limit")},
         "service": svc, "timer": tmr,
@@ -580,6 +672,7 @@ def build_now(p: Paths) -> dict:
         "approvals_log": approvals_log[-300:],
         "approvals_log_total": len(approvals_log),
         "stages": stages,
+        "ia_by_stage": sweep.get("ia_by_stage") or {},
         "sweep_generated_at": sweep.get("generated_at"),
         "warnings": warnings,
         "added_counts": added_counts,
@@ -707,6 +800,8 @@ def run_sweep(p: Paths, api: str) -> dict:
             others.append({"url": url, "ticket": ticket, "stage": st})
 
     stage_counts = {s: 0 for s in core.STAGE_ORDER}
+    _ia, ia_keys = ia_summary(p)
+    ia_by_stage = {s: 0 for s in core.STAGE_ORDER}
     oldest: dict[str, str] = {}
     groups: dict[str, list] = {}
     for t, f in files.items():
@@ -718,6 +813,8 @@ def run_sweep(p: Paths, api: str) -> dict:
         ticket = next((o["ticket"] for o in cur if o["ticket"]), None)
         f["stage"], f["ticket"] = stage, ticket
         stage_counts[stage] += 1
+        if core.norm_url(f["url"] or "") in ia_keys:
+            ia_by_stage[stage] += 1
         if f["ts"] and (stage not in oldest or f["ts"] < oldest[stage]):
             oldest[stage] = f["ts"]
         if stage != "linked":
@@ -732,7 +829,7 @@ def run_sweep(p: Paths, api: str) -> dict:
              "kind": "source_snapshot"})
     summary = {
         "schema": 1, "generated_at": now.isoformat(timespec="seconds"),
-        "wiki_files": len(files), "stage_counts": stage_counts,
+        "wiki_files": len(files), "stage_counts": stage_counts, "ia_by_stage": ia_by_stage,
         "stage_sum_ok": sum(stage_counts.values()) == len(files),
         "oldest": oldest, "delta": delta,
         "registry_kinds": kind_counts, "registry_object_stages": reg_stage_counts,
